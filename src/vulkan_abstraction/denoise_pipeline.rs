@@ -13,7 +13,10 @@ pub struct DenoisePipeline {
 }
 
 impl DenoisePipeline {
-    pub fn new(core: Rc<Core>) -> SrResult<Self> {
+    pub fn new(
+        core: Rc<Core>,
+        descriptor_set_layout: &vulkan_abstraction::DenoiseDescriptorSetLayout
+    ) -> SrResult<Self> {
         let device = core.device().inner();
 
         // --- 1. Shader Loading Helper (Your Syntax) ---
@@ -37,34 +40,16 @@ impl DenoisePipeline {
             };
 
         // --- 2. Load Denoise Shader ---
-        // Make sure your build script compiles 'denoise.glsl' to this location!
         let denoise_stage_create_info = make_shader_stage_create_info(
             vk::ShaderStageFlags::COMPUTE,
             include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv")),
         )?;
 
         // --- 3. Descriptor Set Layout ---
-        let layout_bindings = [
-            // Binding 0: Input Image (Noisy)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-            // Binding 1: Output Image (Clean)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-        ];
+        let set_layouts = [descriptor_set_layout.inner()];
 
-        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&layout_bindings);
-        let descriptor_set_layout = unsafe { device.create_descriptor_set_layout(&layout_info, None)? };
-
-        // --- 4. Pipeline Layout ---
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
-            .set_layouts(std::slice::from_ref(&descriptor_set_layout));
+            .set_layouts(&set_layouts);
 
         let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None)? };
 
@@ -80,7 +65,6 @@ impl DenoisePipeline {
         let pipeline = pipelines[0];
 
         // --- 6. Cleanup Shader Module ---
-        // The pipeline now owns the shader logic, so we can destroy the module.
         unsafe {
             device.destroy_shader_module(denoise_stage_create_info.module, None);
         }
@@ -89,7 +73,7 @@ impl DenoisePipeline {
             core,
             pipeline,
             pipeline_layout,
-            descriptor_set_layout,
+            descriptor_set_layout: descriptor_set_layout.inner(),       //TODO this could be redundant
         })
     }
 
@@ -113,7 +97,7 @@ impl Drop for DenoisePipeline {
         unsafe {
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+
         }
     }
 }

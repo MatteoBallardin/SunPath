@@ -212,9 +212,12 @@ pub(crate) struct RaytracingDescriptorSets {
 impl RaytracingDescriptorSets {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
-        descriptor_set_layout: &vulkan_abstraction::RaytracingDescriptorSetLayout,
+        descriptor_set_layout: &RaytracingDescriptorSetLayout,
         tlas: &TLAS,
-        output_image_view: vk::ImageView,
+        output_image: &vulkan_abstraction::Image,       // Changed from ImageView to Image
+        depth_image: &vulkan_abstraction::Image,
+        normal_image: &vulkan_abstraction::Image,
+        motion_vector_image: &vulkan_abstraction::Image,
         shader_data: &vulkan_abstraction::ShaderDataBuffers,
     ) -> SrResult<Self> {
         let device = core.device().inner();
@@ -224,7 +227,7 @@ impl RaytracingDescriptorSets {
                 .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1),
+                .descriptor_count(4), // 1 Output + 1 Depth + 1 Normal + 1 Motion Vector
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1),
@@ -234,19 +237,6 @@ impl RaytracingDescriptorSets {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(RaytracingDescriptorSetLayout::NUMBER_OF_SAMPLERS),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(1),
-
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(RaytracingDescriptorSetLayout::NUMBER_OF_SAMPLERS + 1),
         ];
 
         let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo::default()
@@ -269,32 +259,73 @@ impl RaytracingDescriptorSets {
         let tlases = [tlas.inner()];
         let mut write_descriptor_set_acceleration_structure =
             vk::WriteDescriptorSetAccelerationStructureKHR::default().acceleration_structures(&tlases);
-        descriptor_writes.push(
+
+        // Using push() for writes, just like your original code
+        let mut push_write = |write| descriptor_writes.push(write);
+
+        push_write(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                 .push_next(&mut write_descriptor_set_acceleration_structure)
-                .descriptor_count(1)
                 .dst_set(descriptor_sets[0])
-                .dst_binding(RaytracingDescriptorSetLayout::TLAS_BINDING),
+                .dst_binding(RaytracingDescriptorSetLayout::TLAS_BINDING)
+                .descriptor_count(1), // Added descriptor_count
         );
 
-        // write image to descriptor set
-        let descriptor_image_infos = [vk::DescriptorImageInfo::default()
-            .image_view(output_image_view)
-            .image_layout(vk::ImageLayout::GENERAL)];
-        descriptor_writes.push(
+        // --- NEW: Helper for images to keep code clean ---
+        let create_info = |img: &vulkan_abstraction::Image| {
+            [vk::DescriptorImageInfo::default()
+                .image_view(img.image_view())
+                .image_layout(vk::ImageLayout::GENERAL)]
+        };
+
+        let output_info = create_info(output_image);
+        let depth_info = create_info(depth_image);
+        let normal_info = create_info(normal_image);
+        let mv_info = create_info(motion_vector_image);
+
+        // Write Output Image
+        push_write(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&descriptor_image_infos)
+                .image_info(&output_info)
                 .dst_set(descriptor_sets[0])
                 .dst_binding(RaytracingDescriptorSetLayout::OUTPUT_IMAGE_BINDING),
         );
+
+        // Write Depth Image
+        push_write(
+            vk::WriteDescriptorSet::default()
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&depth_info)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(RaytracingDescriptorSetLayout::DEPTH_BINDING), // Make sure this constant exists! (e.g., 7)
+        );
+
+        // Write Normal Image
+        push_write(
+            vk::WriteDescriptorSet::default()
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&normal_info)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(RaytracingDescriptorSetLayout::NORMAL_BINDING), // Make sure this constant exists! (e.g., 8)
+        );
+
+        // Write Motion Vector Image
+        push_write(
+            vk::WriteDescriptorSet::default()
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&mv_info)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(RaytracingDescriptorSetLayout::MOTION_VECTOR_BINDING), // Make sure this constant exists! (e.g., 9)
+        );
+
 
         // write matrices uniform buffer to descriptor set
         let descriptor_buffer_infos = [vk::DescriptorBufferInfo::default()
             .buffer(shader_data.get_matrices_uniform_buffer())
             .range(vk::WHOLE_SIZE)];
-        descriptor_writes.push(
+        push_write(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
@@ -306,7 +337,7 @@ impl RaytracingDescriptorSets {
         let descriptor_buffer_infos = [vk::DescriptorBufferInfo::default()
             .buffer(shader_data.get_meshes_info_storage_buffer())
             .range(vk::WHOLE_SIZE)];
-        descriptor_writes.push(
+        push_write(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&descriptor_buffer_infos)
@@ -331,7 +362,7 @@ impl RaytracingDescriptorSets {
             })
             .collect::<Vec<_>>();
 
-        descriptor_writes.push(
+        push_write(
             vk::WriteDescriptorSet::default()
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&descriptor_sampler_infos)

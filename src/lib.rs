@@ -29,6 +29,7 @@ struct ImageDependentData {
     #[allow(unused)]
     motion_vector_image: vulkan_abstraction::Image,
 
+
     #[allow(unused)]
     pub raytracing_descriptor_sets: vulkan_abstraction::RaytracingDescriptorSets,
     #[allow(unused)]
@@ -122,6 +123,7 @@ impl Renderer {
 
         let denoise_pipeline = vulkan_abstraction::DenoisePipeline::new(
             Rc::clone(&core),
+            &denoise_descriptor_set_layout,
         )?;
 
         let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
@@ -319,15 +321,25 @@ impl Renderer {
                 Rc::clone(&self.core),
                 &self.ray_tracing_descriptor_set_layout,
                 &self.tlas,
-                raytrace_result_image.image_view(),
+                &raytrace_result_image, // Raw color output
+                &depth_image,           // G-Buffer Depth
+                &normal_image,          // G-Buffer Normals
+                &motion_vector_image,   // G-Buffer Motion
                 &self.shader_data_buffers,
             )?;
 
             let denoise_descriptor_sets = vulkan_abstraction::DenoiseDescriptorSets::new(
                 Rc::clone(&self.core),
                 &self.denoise_descriptor_set_layout,
-                &raytrace_result_image, &denoise_result_image, /* &vulkan_abstraction::image::Image */, /* &vulkan_abstraction::image::Image */, /* &vulkan_abstraction::image::Image */, /* &[vulkan_abstraction::image::Image; 2] */, /* &[vulkan_abstraction::image::Image; 2] */, /* ash::vk::Sampler */)?;
-
+                &raytrace_result_image,  // Input (Read)
+                &denoise_result_image,   // Output (Write)
+                &depth_image,            // G-Buffer (Read)
+                &normal_image,           // G-Buffer (Read)
+                &motion_vector_image,    // G-Buffer (Read)
+                &self.accumulation_images,   // Global History Array (Read)
+                &self.accumulation_images,   // Global Accumulation Array (Write)
+                self.default_sampler.inner(),    // The sampler for the history
+            )?;
 
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
             let raytracing_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
@@ -361,6 +373,9 @@ impl Renderer {
                 ImageDependentData {
                     raytrace_result_image,
                     denoise_result_image,
+                    depth_image,
+                    normal_image,
+                    motion_vector_image,
                     raytracing_cmd_buf,
                     blit_cmd_buf,
                     raytracing_descriptor_sets,
