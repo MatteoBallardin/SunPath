@@ -4,62 +4,50 @@ layout(local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0, rgba32f) uniform image2D inputImage;
 layout(set = 0, binding = 1, rgba32f) uniform image2D outputImage;
 
-// Tunable parameters
-const int KERNEL_RADIUS = 2;
-const float SIGMA_SPATIAL = 10.0; // Distance weight
-const float SIGMA_COLOR = 0.5;    // Color edge weight (Low = strictly preserve edges)
+layout (local_size_x = 16, local_size_y = 16) in;
+
 
 void main() {
-    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(inputImage);
+    ivec2 size = imageSize(outputImage);
+    ivec2 uv = ivec2(gl_GlobalInvocationID.xy);
+    if (uv.x >= size.x || uv.y >= size.y) return;
 
-    if (pixel_coords.x >= size.x || pixel_coords.y >= size.y) {
-        return;
-    }
+    vec3 centerColor = imageLoad(inputImage, uv).rgb;
 
-    vec4 center_color = imageLoad(inputImage, pixel_coords);
+    vec3 minColor = vec3(10000.0);
+    vec3 maxColor = vec3(-10000.0);
+    vec3 avgColor = vec3(0.0);
 
-    // Optimization: If the pixel is pure black/empty, skip
-    if (center_color.a == 0.0) {
-        imageStore(outputImage, pixel_coords, center_color);
-        return;
-    }
+    int count = 0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            // Skip the center pixel for the stats
+            if (x == 0 && y == 0) continue;
 
-    vec3 sum_color = vec3(0.0);
-    float sum_weight = 0.0;
-
-    for (int x = -KERNEL_RADIUS; x <= KERNEL_RADIUS; ++x) {
-        for (int y = -KERNEL_RADIUS; y <= KERNEL_RADIUS; ++y) {
-            ivec2 neighbor_coords = pixel_coords + ivec2(x, y);
+            ivec2 neighborPos = uv + ivec2(x, y);
 
             // Bounds check
-            if (neighbor_coords.x < 0 || neighbor_coords.x >= size.x ||
-            neighbor_coords.y < 0 || neighbor_coords.y >= size.y) {
-                continue;
-            }
+            if (neighborPos.x < 0 || neighborPos.y < 0 ||
+            neighborPos.x >= size.x || neighborPos.y >= size.y) continue;
 
-            vec4 neighbor_color = imageLoad(inputImage, neighbor_coords);
+            vec3 c = imageLoad(inputImage, neighborPos).rgb;
 
-            // Gaussian weight
-            float dist2 = float(x*x + y*y);
-            float w_spatial = exp(-(dist2) / (2.0 * SIGMA_SPATIAL * SIGMA_SPATIAL));
-
-            //Pixels with similar color matter more (Edge preserving)
-            vec3 diff_color = center_color.rgb - neighbor_color.rgb;
-            float color_dist2 = dot(diff_color, diff_color);
-            float w_color = exp(-(color_dist2) / (2.0 * SIGMA_COLOR * SIGMA_COLOR));
-
-            // Combined weight
-            float weight = w_spatial * w_color;
-
-            sum_color += neighbor_color.rgb * weight;
-            sum_weight += weight;
+            minColor = min(minColor, c);
+            maxColor = max(maxColor, c);
+            avgColor += c;
+            count++;
         }
     }
 
-    // Normalize
-    vec3 final_color = sum_color / sum_weight;
+    avgColor /= float(count);
 
-    // Store result
-    imageStore(outputImage, pixel_coords, vec4(final_color, 1.0));
+
+    vec3 clampedColor = clamp(centerColor, minColor, maxColor);
+
+    float mixFactor = 0.2;
+    vec3 finalColor = mix(clampedColor, avgColor, mixFactor);
+
+    //temporarly disabled. Use finalcolor instead of centercolor
+
+    imageStore(outputImage, uv, vec4(centerColor, 1.0));
 }
