@@ -63,13 +63,20 @@ void main() {
         for (int bounce = 0; bounce < 5; bounce++) {
             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, rayOrigin, 0.001, rayDir, 10000.0, 0);
 
+            // one time calculation of g-buffer values (depth, normal)
             if (bounce == 0) {
+
                 float depth_value;
+                vec3 normal_value;
+
                 if (prd.type == 1) { // Hit sky
                     depth_value = 100000.0; // Infinite distance
+                    normal_value = vec3(0.0,0.0,0.0);
                 } else {
                     depth_value = prd.dist; // Raw linear distance
+                    normal_value = prd.normal;
                 }
+                imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(normal_value, 0.0));
                 imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(depth_value, 0.0, 0.0, 0.0));
             }
 
