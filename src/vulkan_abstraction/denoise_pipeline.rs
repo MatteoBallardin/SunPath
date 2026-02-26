@@ -1,4 +1,5 @@
 use std::{ffi::CStr, rc::Rc};
+use std::marker::PhantomData;
 use ash::vk;
 use crate::error::SrResult;
 use crate::vulkan_abstraction::{self, Core};
@@ -41,10 +42,10 @@ pub struct ComputePipeline<T: ComputeTypeDef> {
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
-    _marker: T,
+    _marker: PhantomData<T>,
 }
 
-impl ComputePipeline<DenoisePass> {
+impl<T:ComputeTypeDef> ComputePipeline<T> {
     pub fn new(
         core: Rc<Core>,
         descriptor_set_layout: &vulkan_abstraction::DenoiseDescriptorSetLayout
@@ -74,7 +75,8 @@ impl ComputePipeline<DenoisePass> {
         // Load Denoise Shader
         let denoise_stage_create_info = make_shader_stage_create_info(
             vk::ShaderStageFlags::COMPUTE,
-            include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv")),
+            //include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv")),
+            
         )?;
 
         // create push constants
@@ -113,7 +115,7 @@ impl ComputePipeline<DenoisePass> {
             pipeline,
             pipeline_layout,
             descriptor_set_layout: descriptor_set_layout.inner(),       //TODO this could be redundant
-            _marker: DenoisePass,
+            _marker: PhantomData,
         })
     }
 
