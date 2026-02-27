@@ -13,7 +13,7 @@ use std::{collections::HashMap, rc::Rc};
 use ash::vk;
 
 use crate::utils::env_var_as_bool;
-use crate::vulkan_abstraction::DenoiseDescriptorSetLayout;
+use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass};
 
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -56,7 +56,7 @@ pub struct Renderer {
     image_extent: vk::Extent3D,
     image_format: vk::Format,
 
-    denoise_pipeline: vulkan_abstraction::ComputePipeline,
+    denoise_pipeline: vulkan_abstraction::ComputePipeline<DenoisePass>,
 
     fallback_texture_image: vulkan_abstraction::Image,
     fallback_texture_sampler: vulkan_abstraction::Sampler,

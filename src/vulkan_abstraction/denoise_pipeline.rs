@@ -25,7 +25,7 @@ impl ComputeTypeDef for DenoisePass {
 impl ComputeTypeDef for TemporalPass {
     type PushConstant = DenoisePushConstant;    //TODO change type
     fn spirv_bytes() -> &'static [u8] {
-        include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/temporal.spirv"))
+        include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/temporal_accumulation.spirv"))
     }
 }
 
