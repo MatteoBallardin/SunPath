@@ -2,13 +2,14 @@ use std::{ffi::CStr, rc::Rc};
 use std::marker::PhantomData;
 use ash::vk;
 use crate::error::SrResult;
-use crate::vulkan_abstraction::{self, Core};
+use crate::vulkan_abstraction::{self, Core, DenoiseDescriptorSetLayout, TemporalAccumulationDescriptorSetLayout};
 
 const SHADER_ENTRY_POINT: &CStr = c"main";
 
 
 pub trait ComputeTypeDef {
     type PushConstant;
+    type DescriptorSetLayout;
     fn spirv_bytes() -> &'static [u8];
 }
 
@@ -17,6 +18,7 @@ pub struct TemporalPass;
 
 impl ComputeTypeDef for DenoisePass {
     type PushConstant = DenoisePushConstant;     //TODO change type
+    type DescriptorSetLayout = DenoiseDescriptorSetLayout;
     fn spirv_bytes() -> &'static [u8] {
         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/denoise.spirv"))
     }
@@ -24,6 +26,7 @@ impl ComputeTypeDef for DenoisePass {
 
 impl ComputeTypeDef for TemporalPass {
     type PushConstant = DenoisePushConstant;    //TODO change type
+    type DescriptorSetLayout = TemporalAccumulationDescriptorSetLayout;
     fn spirv_bytes() -> &'static [u8] {
         include_bytes_align_as!(u32, concat!(env!("OUT_DIR"), "/temporal_accumulation.spirv"))
     }
@@ -48,7 +51,7 @@ pub struct ComputePipeline<T: ComputeTypeDef> {
 impl<T:ComputeTypeDef> ComputePipeline<T> {
     pub fn new(
         core: Rc<Core>,
-        descriptor_set_layout: &vulkan_abstraction::DenoiseDescriptorSetLayout
+        descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> SrResult<Self> {
         let device = core.device().inner();
 
@@ -74,7 +77,7 @@ impl<T:ComputeTypeDef> ComputePipeline<T> {
             .offset(0)
             .size(std::mem::size_of::<T::PushConstant>() as u32)];
 
-        let set_layouts = [descriptor_set_layout.inner()];
+        let set_layouts = [descriptor_set_layout];
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&set_layouts)
@@ -107,7 +110,7 @@ impl<T:ComputeTypeDef> ComputePipeline<T> {
             core,
             pipeline,
             pipeline_layout,
-            descriptor_set_layout: descriptor_set_layout.inner(),
+            descriptor_set_layout,
             _marker: PhantomData,
         })
     }

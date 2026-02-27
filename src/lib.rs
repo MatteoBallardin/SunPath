@@ -13,7 +13,7 @@ use std::{collections::HashMap, rc::Rc};
 use ash::vk;
 
 use crate::utils::env_var_as_bool;
-use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass};
+use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, TemporalAccumulationDescriptorSetLayout, TemporalPass};
 
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -52,10 +52,12 @@ pub struct Renderer {
     shader_binding_table: vulkan_abstraction::ShaderBindingTable,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
     ray_tracing_descriptor_set_layout: vulkan_abstraction::RaytracingDescriptorSetLayout,
+    temporal_accumulation_descriptor_set_layout: TemporalAccumulationDescriptorSetLayout,
     denoise_descriptor_set_layout: DenoiseDescriptorSetLayout,
     image_extent: vk::Extent3D,
     image_format: vk::Format,
 
+    temporal_accumulation_pipeline: vulkan_abstraction::ComputePipeline<TemporalPass>,
     denoise_pipeline: vulkan_abstraction::ComputePipeline<DenoisePass>,
 
     fallback_texture_image: vulkan_abstraction::Image,
@@ -113,6 +115,7 @@ impl Renderer {
         let shader_data_buffers = vulkan_abstraction::ShaderDataBuffers::new_empty(Rc::clone(&core))?;
 
         let ray_tracing_descriptor_set_layout = vulkan_abstraction::RaytracingDescriptorSetLayout::new(Rc::clone(&core))?;
+        let temporal_accumulation_descriptor_set_layout = vulkan_abstraction::TemporalAccumulationDescriptorSetLayout::new(Rc::clone(&core))?;
         let denoise_descriptor_set_layout = vulkan_abstraction::DenoiseDescriptorSetLayout::new(Rc::clone(&core))?;
 
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
@@ -121,9 +124,14 @@ impl Renderer {
             env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR).unwrap_or(IS_DEBUG_BUILD),
         )?;
 
+        let temporal_accumulation_pipeline = vulkan_abstraction::ComputePipeline::<TemporalPass>::new(
+            Rc::clone(&core),
+            temporal_accumulation_descriptor_set_layout.inner()
+        )?;
+
         let denoise_pipeline = vulkan_abstraction::ComputePipeline::new(
             Rc::clone(&core),
-            &denoise_descriptor_set_layout,
+            denoise_descriptor_set_layout.inner(),
         )?;
 
         let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
@@ -200,6 +208,7 @@ impl Renderer {
                 shader_binding_table,
                 ray_tracing_pipeline,
                 ray_tracing_descriptor_set_layout,
+                temporal_accumulation_descriptor_set_layout,
                 denoise_descriptor_set_layout,
 
                 blases,
@@ -211,6 +220,7 @@ impl Renderer {
                 image_format,
 
                 denoise_pipeline,
+                temporal_accumulation_pipeline,
 
                 accumulation_images,
                 frame_count: 0,
@@ -395,17 +405,23 @@ impl Renderer {
                 &self.shader_data_buffers,
             )?;
 
+            let temporal_accumulation_descriptor_sets = vulkan_abstraction::TemporalAccumulationDescriptorSets::new(
+                &self.core, // Passed as &Rc<Core> based on our previous struct signature
+                &self.temporal_accumulation_descriptor_set_layout,
+                &raytrace_result_image,       // Binding 0: Noisy Input
+                &motion_vector_image,         // Binding 1: Motion Vectors
+                &self.accumulation_images,    // Binding 2: Ping-Pong Output (Storage)
+                &self.accumulation_images,    // Binding 3: Ping-Pong History (Samplers)
+                self.default_sampler.inner(),
+            )?;
+
             let denoise_descriptor_sets = vulkan_abstraction::DenoiseDescriptorSets::new(
                 Rc::clone(&self.core),
                 &self.denoise_descriptor_set_layout,
-                &raytrace_result_image,  // Input (Read)
-                &denoise_result_image,   // Output (Write)
-                &depth_image,            // G-Buffer (Read)
-                &normal_image,           // G-Buffer (Read)
-                &motion_vector_image,    // G-Buffer (Read)
-                &self.accumulation_images,   // Global History Array (Read)
-                &self.accumulation_images,   // Global Accumulation Array (Write)
-                self.default_sampler.inner(),    // The sampler for the history
+                &self.accumulation_images,
+                &depth_image,
+                &normal_image,
+                &denoise_result_image,
             )?;
 
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;

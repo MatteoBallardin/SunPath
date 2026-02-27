@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use ash::vk;
-
+use ash::vk::DescriptorSetLayout;
 use crate::{error::*, vulkan_abstraction};
 
 use vulkan_abstraction::TLAS;
@@ -107,34 +107,100 @@ impl Drop for RaytracingDescriptorSetLayout {
     }
 }
 
-pub struct DenoiseDescriptorSetLayout {
+pub struct TemporalAccumulationDescriptorSetLayout {
     descriptor_set_layout: vk::DescriptorSetLayout,
     core: Rc<vulkan_abstraction::Core>,
 }
 
-impl DenoiseDescriptorSetLayout {
-    pub const RAW_COLOR_BINDING: u32 = 0;
-    pub const OUTPUT_IMAGE_BINDING: u32 = 1;
-    pub const DEPTH_BINDING: u32 = 2;
-    pub const NORMAL_BINDING: u32 = 3;
-    pub const MOTION_VECTOR_BINDING: u32 = 4;
-    pub const HISTORY_BINDING: u32 = 5;
-    pub const ACCUMULATION_BINDING: u32 = 6;
+impl TemporalAccumulationDescriptorSetLayout {
+    pub const RAW_COLOR_BINDING: u32 = 0;      // Current Noisy Frame
+    pub const MOTION_VECTOR_BINDING: u32 = 1;  // Input from Raytrace pass
+    pub const OUTPUT_IMAGES_BINDING: u32 = 2;  // Array of 2 (Ping-Pong Storage)
+    pub const HISTORY_SAMPLERS_BINDING: u32 = 3; // Array of 2 (Ping-Pong Sampler)
 
-    pub const NUMBER_OF_BINDINGS: usize = 7;
+    pub const NUMBER_OF_BINDINGS: usize = 4;
 
     pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
         let device = core.device().inner();
 
         let bindings = [
+            // 0: Current Noisy Frame (Storage)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(Self::RAW_COLOR_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
 
+            // 1: Motion Vectors (Storage or Sampler, usually Storage is fine)
             vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::OUTPUT_IMAGE_BINDING)
+                .binding(Self::MOTION_VECTOR_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+
+            // 2: Accumulation Images [Ping, Pong]
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(Self::OUTPUT_IMAGES_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(2)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+
+            // 3: History Samplers [Ping, Pong]
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(Self::HISTORY_SAMPLERS_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(2)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        ];
+
+        let create_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&bindings);
+
+        let descriptor_set_layout = unsafe {
+            device.create_descriptor_set_layout(&create_info, None)?
+        };
+
+        Ok(Self {
+            descriptor_set_layout,
+            core,
+        })
+    }
+
+    pub fn inner(&self) -> vk::DescriptorSetLayout {
+        self.descriptor_set_layout
+    }
+}
+
+impl Drop for TemporalAccumulationDescriptorSetLayout {
+    fn drop(&mut self) {
+        unsafe {
+            self.core
+                .device()
+                .inner()
+                .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        }
+    }
+}
+
+pub struct DenoiseDescriptorSetLayout {
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    core: Rc<vulkan_abstraction::Core>,
+}
+
+impl DenoiseDescriptorSetLayout {
+    pub const TEMPORAL_RESULT_BINDING: u32 = 0; // Input from Temporal Pass
+    pub const DEPTH_BINDING: u32 = 1;           // Edge preservation
+    pub const NORMAL_BINDING: u32 = 2;          // Edge preservation
+    pub const FINAL_OUTPUT_BINDING: u32 = 3;    // Final image to the screen
+
+    pub const NUMBER_OF_BINDINGS: usize = 4;
+
+    pub fn new(core: Rc<vulkan_abstraction::Core>) -> SrResult<Self> {
+        let device = core.device().inner();
+
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(Self::TEMPORAL_RESULT_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
@@ -152,25 +218,10 @@ impl DenoiseDescriptorSetLayout {
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
 
             vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::MOTION_VECTOR_BINDING)
+                .binding(Self::FINAL_OUTPUT_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
-
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::HISTORY_BINDING)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-
-            // Accumulation layout binding (Write-only, uses imageStore)
-            vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::ACCUMULATION_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(2)
-                .stage_flags(vk::ShaderStageFlags::COMPUTE),
-
-
         ];
 
         let create_info = vk::DescriptorSetLayoutCreateInfo::default()
@@ -379,70 +430,6 @@ impl RaytracingDescriptorSets {
         })
     }
 
-    /*
-    pub fn update_accumulation_images(
-        &self,
-        images: &[vulkan_abstraction::Image; 2],
-        sampler: vk::Sampler,
-    ) {
-        let device = self.core.device().inner();
-
-        // 1. Prepare Infos for History (Binding 5) - Read Only
-        // We act as if we are binding an array of 2 textures.
-        let history_infos = images
-            .iter()
-            .map(|img| {
-                vk::DescriptorImageInfo::default()
-                    .sampler(sampler)
-                    .image_view(img.image_view())
-                    .image_layout(vk::ImageLayout::GENERAL)
-            })
-            .collect::<Vec<_>>();
-
-        // 2. Prepare Infos for Accumulation (Binding 6) - General/Write
-        // We act as if we are binding an array of 2 storage images.
-        let accum_infos = images
-            .iter()
-            .map(|img| {
-                vk::DescriptorImageInfo::default()
-                    .image_view(img.image_view())
-                    .image_layout(vk::ImageLayout::GENERAL)
-            })
-            .collect::<Vec<_>>();
-
-        let mut writes = Vec::new();
-
-
-        for set in &self.descriptor_sets {
-            // Write Binding 5 (Array of 2 Textures)
-            writes.push(
-                vk::WriteDescriptorSet::default()
-                    .dst_set(*set)
-                    .dst_binding(RaytracingDescriptorSetLayout::HISTORY_BINDING)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .dst_array_element(0) // Start at index 0 of the array
-                    .image_info(&history_infos), // Contains 2 items
-            );
-
-
-            // Write Binding 6 (Array of 2 Images)
-            writes.push(
-                vk::WriteDescriptorSet::default()
-                    .dst_set(*set)
-                    .dst_binding(RaytracingDescriptorSetLayout::ACCUMULATION_BINDING)
-                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                    .dst_array_element(0) // Start at index 0 of the array
-                    .image_info(&accum_infos), // Contains 2 items
-            );
-        }
-
-        unsafe {
-            device.update_descriptor_sets(&writes, &[]);
-        }
-    }
-
-     */
-
     pub fn inner(&self) -> &[vk::DescriptorSet] {
         &self.descriptor_sets
     }
@@ -457,7 +444,124 @@ impl Drop for RaytracingDescriptorSets {
     }
 }
 
+pub(crate) struct TemporalAccumulationDescriptorSets {
+    descriptor_sets: Vec<vk::DescriptorSet>,
+    descriptor_pool: vk::DescriptorPool,
+    core: Rc<vulkan_abstraction::Core>,
+}
 
+impl TemporalAccumulationDescriptorSets {
+    pub fn new(
+        core: &Rc<vulkan_abstraction::Core>,
+        layout: &TemporalAccumulationDescriptorSetLayout,
+        input_image: &vulkan_abstraction::Image,       // Binding 0: Noisy Raytrace result
+        motion_vector_image: &vulkan_abstraction::Image, // Binding 1: Motion Vectors
+        accumulation_images: &[vulkan_abstraction::Image; 2], // Binding 2: Storage Images (Ping-Pong Output)
+        history_images: &[vulkan_abstraction::Image; 2],      // Binding 3: Samplers (Ping-Pong History)
+        history_sampler: vk::Sampler,
+    ) -> SrResult<Self> {
+        let device = core.device().inner();
+
+        // 1. Define Pool Sizes (4 Storage, 2 Samplers)
+        let pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(4), // 1 Input + 1 Motion + 2 Accumulation
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(2), // 2 History
+        ];
+
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&pool_sizes)
+            .max_sets(1);
+
+        let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None)? };
+
+        // 2. Allocate Descriptor Set
+        let set_layouts = [layout.inner()];
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(descriptor_pool)
+            .set_layouts(&set_layouts);
+
+        let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
+        let set = descriptor_sets[0];
+
+        // Helper closure
+        let create_info = |img: &vulkan_abstraction::Image| {
+            vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::GENERAL)
+                .image_view(img.image_view())
+        };
+
+        // 3. Create Image Infos
+        let input_info = create_info(input_image);
+        let mv_info = create_info(motion_vector_image);
+
+        let accumulation_infos = [
+            create_info(&accumulation_images[0]),
+            create_info(&accumulation_images[1]),
+        ];
+
+        let history_infos = [
+            vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::GENERAL)
+                .image_view(history_images[0].image_view())
+                .sampler(history_sampler),
+            vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::GENERAL)
+                .image_view(history_images[1].image_view())
+                .sampler(history_sampler),
+        ];
+
+        // 4. Write to the Descriptor Set
+        let writes = [
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(TemporalAccumulationDescriptorSetLayout::RAW_COLOR_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&input_info)),
+
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(TemporalAccumulationDescriptorSetLayout::MOTION_VECTOR_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&mv_info)),
+
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(TemporalAccumulationDescriptorSetLayout::OUTPUT_IMAGES_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&accumulation_infos),
+
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(TemporalAccumulationDescriptorSetLayout::HISTORY_SAMPLERS_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(&history_infos),
+        ];
+
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
+
+        Ok(Self {
+            core: Rc::clone(core),
+            descriptor_sets,
+            descriptor_pool,
+        })
+    }
+
+    pub fn inner(&self) -> &[vk::DescriptorSet] {
+        &self.descriptor_sets
+    }
+}
+
+impl Drop for TemporalAccumulationDescriptorSets {
+    fn drop(&mut self) {
+        unsafe {
+            self.core.device().inner().destroy_descriptor_pool(self.descriptor_pool, None);
+        }
+    }
+}
 
 /// Wrapper struct for the denoise pass descriptor set
 pub(crate) struct DenoiseDescriptorSets {
@@ -470,120 +574,100 @@ impl DenoiseDescriptorSets {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         layout: &DenoiseDescriptorSetLayout,
-        input_image: &vulkan_abstraction::Image,
-        output_image: &vulkan_abstraction::Image,
+        temporal_results: &[vulkan_abstraction::Image; 2], // Pass the accumulation array from the Temporal pass here
         depth_image: &vulkan_abstraction::Image,
         normal_image: &vulkan_abstraction::Image,
-        motion_vector_image: &vulkan_abstraction::Image,
-        history_images: &[vulkan_abstraction::Image; 2],
-        accumulation_images: &[vulkan_abstraction::Image; 2],
-        history_sampler: vk::Sampler,
+        output_image: &vulkan_abstraction::Image, // The final output image
     ) -> SrResult<Self> {
         let device = core.device().inner();
 
+        // 1. Pool Sizes (4 Storage Images per set * 2 Sets = 8 Storage Images total)
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(7),
-            vk::DescriptorPoolSize::default()
-                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2),
+                .descriptor_count(8),
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
-            .max_sets(1);
+            .max_sets(2); // Allocate 2 sets!
 
         let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None)? };
 
-        let set_layouts = [layout.inner()];
+        // 2. Allocate Descriptor Sets
+        let set_layouts = [layout.inner(), layout.inner()]; // Layout used twice
 
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&set_layouts);
 
         let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
-        let set = descriptor_sets[0];
 
+        // Helper
         let create_info = |img: &vulkan_abstraction::Image| {
             vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::GENERAL)
                 .image_view(img.image_view())
         };
 
-        let input_info = create_info(input_image);
-        let output_info = create_info(output_image);
+        // 3. Image Infos
         let depth_info = create_info(depth_image);
         let normal_info = create_info(normal_image);
-        let mv_info = create_info(motion_vector_image);
+        let output_info = create_info(output_image);
 
-        // 3. Create Image Infos for the Ping-Pong Arrays
-        let history_infos = [
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::GENERAL)
-                .image_view(history_images[0].image_view())
-                .sampler(history_sampler),
-            vk::DescriptorImageInfo::default()
-                .image_layout(vk::ImageLayout::GENERAL)
-                .image_view(history_images[1].image_view())
-                .sampler(history_sampler),
-        ];
+        let temporal_info_0 = create_info(&temporal_results[0]);
+        let temporal_info_1 = create_info(&temporal_results[1]);
 
-        let accumulation_infos = [
-            create_info(&accumulation_images[0]),
-            create_info(&accumulation_images[1]),
-        ];
-
-        // 4. Write to the Descriptor Set
         let writes = [
-            // Binding 0: Raw Color
+            // ---------------- SET 0 ----------------
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(DenoiseDescriptorSetLayout::RAW_COLOR_BINDING)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(DenoiseDescriptorSetLayout::TEMPORAL_RESULT_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&input_info)),
+                .image_info(std::slice::from_ref(&temporal_info_0)),
 
-            // Binding 1: Output
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(DenoiseDescriptorSetLayout::OUTPUT_IMAGE_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&output_info)),
-
-            // Binding 2: Depth
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
+                .dst_set(descriptor_sets[0])
                 .dst_binding(DenoiseDescriptorSetLayout::DEPTH_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(std::slice::from_ref(&depth_info)),
 
-            // Binding 3: Normal
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
+                .dst_set(descriptor_sets[0])
                 .dst_binding(DenoiseDescriptorSetLayout::NORMAL_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(std::slice::from_ref(&normal_info)),
 
-            // Binding 4: Motion Vectors
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(DenoiseDescriptorSetLayout::MOTION_VECTOR_BINDING)
+                .dst_set(descriptor_sets[0])
+                .dst_binding(DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&mv_info)),
+                .image_info(std::slice::from_ref(&output_info)),
 
-            // Binding 5: History (Array of 2, Samplers)
+            // ---------------- SET 1 ----------------
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(DenoiseDescriptorSetLayout::HISTORY_BINDING)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&history_infos), // Pass the whole array!
-
-            // Binding 6: Accumulation (Array of 2, Storage)
-            vk::WriteDescriptorSet::default()
-                .dst_set(set)
-                .dst_binding(DenoiseDescriptorSetLayout::ACCUMULATION_BINDING)
+                .dst_set(descriptor_sets[1])
+                .dst_binding(DenoiseDescriptorSetLayout::TEMPORAL_RESULT_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&accumulation_infos), // Pass the whole array!
+                .image_info(std::slice::from_ref(&temporal_info_1)),
+
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[1])
+                .dst_binding(DenoiseDescriptorSetLayout::DEPTH_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&depth_info)),
+
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[1])
+                .dst_binding(DenoiseDescriptorSetLayout::NORMAL_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&normal_info)),
+
+            vk::WriteDescriptorSet::default()
+                .dst_set(descriptor_sets[1])
+                .dst_binding(DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&output_info)),
         ];
 
         unsafe { device.update_descriptor_sets(&writes, &[]) };
