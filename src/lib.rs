@@ -240,8 +240,6 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
-
-
         let new_extent = utils::tuple_to_extent3d(image_extent);
         if new_extent == self.image_extent {
             return Ok(());
@@ -261,15 +259,61 @@ impl Renderer {
             )
         };
 
-
         self.accumulation_images = [
             create_accum_image("Accumulation_1")?,
             create_accum_image("Accumulation_2")?,
         ];
 
+        let device = self.core.device().inner();
+        let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(self.core.clone())?;
+
+        unsafe {
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
+
+            let create_barrier = |image: vk::Image| {
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)
+            };
+
+            let barriers = [
+                create_barrier(self.accumulation_images[0].inner()),
+                create_barrier(self.accumulation_images[1].inner()),
+            ];
+
+            device.cmd_pipeline_barrier(
+                setup_cmd_buf.inner(),
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &barriers,
+            );
+
+            device.end_command_buffer(setup_cmd_buf.inner())?;
+
+            let fence = setup_cmd_buf.fence_mut().submit()?;
+            self.core.queue().submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
+            setup_cmd_buf.fence_mut().wait()?;
+        }
+
         self.frame_count = 0;
 
-        //self.image_dependant_data
         Ok(())
     }
 
@@ -368,6 +412,8 @@ impl Renderer {
                         create_barrier(normal_image.inner()),
                         create_barrier(motion_vector_image.inner()),
                     ];
+
+
 
                     device.cmd_pipeline_barrier(
                         setup_cmd_buf.inner(),
@@ -585,6 +631,7 @@ impl Renderer {
             let accum_idx = ((self.frame_count + 1) % 2) as usize;
             let current_temporal_image = self.accumulation_images[accum_idx].inner();
 
+            //denoised_image = current_temporal_image;
 
             (*this_ptr).cmd_denoise_image(
                 cmd_buf,
@@ -835,11 +882,23 @@ impl Renderer {
             .image(accumulation_images[accum_idx].inner())
             .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
 
+        let history_old_layout = if self.frame_count == 0 {
+            vk::ImageLayout::UNDEFINED
+        } else {
+            vk::ImageLayout::GENERAL
+        };
+
+        let history_src_access = if self.frame_count == 0 {
+            vk::AccessFlags::empty()
+        } else {
+            vk::AccessFlags::SHADER_WRITE
+        };
+
         // The one we read from (History):
         let read_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Written to last frame
+            .src_access_mask(history_src_access) // Written to last frame
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
+            .old_layout(history_old_layout)
             .new_layout(vk::ImageLayout::GENERAL)
             .image(accumulation_images[history_idx].inner())
             .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });

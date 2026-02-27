@@ -11,7 +11,7 @@ layout(set = 0, binding = 1, rg16f)   uniform readonly image2D motion_vector_ima
 layout(set = 0, binding = 2, rgba32f) uniform image2D accumulation_images[2];
 layout(set = 0, binding = 3)          uniform sampler2D history_samplers[2];
 
-const float ACCUMULATION_FACTOR = 1.0;
+const float ACCUMULATION_FACTOR = 0.9;
 
 vec3 get_historical_color(uint history_idx, vec2 uv, vec3 current_color) {
     if (pc.frame_count == 0) return current_color;
@@ -54,5 +54,11 @@ void main() {
     // Final mix factor
     accumulated_color = mix(get_historical_color(history_idx, uv, current_color), accumulated_color, ACCUMULATION_FACTOR);
 
+    if (pc.frame_count < 2) {
+        accumulated_color = current_color;
+    }
     imageStore(accumulation_images[accum_idx], pixel_coords, vec4(accumulated_color, 1.0));
+
+
+
 }
