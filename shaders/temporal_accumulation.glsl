@@ -11,7 +11,7 @@ layout(set = 0, binding = 1, rg16f)   uniform readonly image2D motion_vector_ima
 layout(set = 0, binding = 2, rgba32f) uniform image2D accumulation_images[2];
 layout(set = 0, binding = 3)          uniform sampler2D history_samplers[2];
 
-const float ACCUMULATION_FACTOR = 0.2;
+const float ACCUMULATION_FACTOR = 0.1;
 
 vec3 get_historical_color(uint history_idx, vec2 uv, vec3 current_color) {
     if (pc.frame_count == 0) return current_color;
@@ -24,7 +24,10 @@ vec3 perform_temporal_accumulation(vec3 current_color, sampler2D history_sampler
 
     if (is_off_screen) return current_color;
 
+
     vec3 history_color = texture(history_sampler, prev_uv).rgb;
+
+
 
     return mix(history_color, current_color, ACCUMULATION_FACTOR);
 }
@@ -36,7 +39,7 @@ void main() {
 
     vec2 uv = (vec2(pixel_coords) + 0.5) / vec2(size);
     vec2 motion_vector = imageLoad(motion_vector_image, pixel_coords).rg;
-
+    //motion_vector = vec2(0.0);
     // Read the noisy input
     vec3 current_color = imageLoad(raw_rt_color, pixel_coords).rgb;
 
@@ -48,6 +51,7 @@ void main() {
     history_samplers[history_idx],
     uv,
     motion_vector,
+
     pc.frame_count
     );
 
@@ -57,8 +61,11 @@ void main() {
     if (pc.frame_count < 2) {
         accumulated_color = current_color;
     }
-    imageStore(accumulation_images[accum_idx], pixel_coords, vec4(motion_vector, 0.0, 1.0));
 
+    //imageStore(accumulation_images[accum_idx], pixel_coords, vec4(motion_vector, 0.0, 1.0));
+
+    imageStore(accumulation_images[accum_idx], pixel_coords, vec4(accumulated_color, 1.0));
+    //imageStore(accumulation_images[accum_idx], pixel_coords, vec4(mix(motion_vector.r, accumulated_color.r, 0.5),mix(motion_vector.g, accumulated_color.g, 0.5),accumulated_color.b, 1.0));
 
 
 }

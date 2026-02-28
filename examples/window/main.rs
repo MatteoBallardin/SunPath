@@ -68,7 +68,7 @@ impl App {
         let (mut renderer, surface) =
             sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_SRGB, instance_exts, &create_surface)?;
 
-        renderer.load_gltf("examples/assets/Lantern.glb")?;
+        renderer.load_gltf("examples/assets/Room.glb")?;
 
         //take ownership of the surface
         let surface = surface::Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
@@ -264,11 +264,15 @@ impl App {
     fn draw(&mut self) -> sunray::error::SrResult<()> {
         // update frame data:
         let time = self.time_elapsed();
-        let y = 13.0;
-        let dist = 30.0;
+
+        let y = 7.0;
+        let dist = 20.0;
+
+
         let camera = Camera::default()
-            //.set_position(na::Point3::new(dist, y, dist))
-            .set_position(na::Point3::new(dist * time.cos(), y, dist * time.sin()))
+            //.set_position(na::Point3::new(0.0, y, dist))
+            .set_position(na::Point3::new(0.0, y + (time * 5.0).cos() * 5.0, dist))
+            //.set_position(na::Point3::new(dist * time.cos(), y, dist * time.sin()))
             .set_target(na::Point3::new(0.0, y, 0.0))
             .set_fov_y(45.0);
         self.res_mut().renderer.set_camera(camera)?;

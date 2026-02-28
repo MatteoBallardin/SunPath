@@ -38,7 +38,7 @@ impl Camera {
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
             extent.width as f32 / extent.height as f32,
-            self.fov_y * 3.14 / std::f32::consts::PI,
+            self.fov_y.to_radians(),
             0.1,   //render everything after this distance
             100.0, //discard everything after this distance
         );
@@ -54,7 +54,7 @@ impl Camera {
             view_inverse,
             proj_inverse,
             view_proj,
-            prev_view_proj: view_proj,
+            prev_view_proj: nalgebra::zero(),
         }
     }
 

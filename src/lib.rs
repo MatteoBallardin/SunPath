@@ -564,11 +564,16 @@ impl Renderer {
         matrices.prev_view_proj = self.prev_view_proj;
         let tmp = matrices.view_proj;
 
+        
+
         // Upload the struct to the uniform buffer
         self.shader_data_buffers.set_matrices(matrices)?;
 
+
         // Save the current frame's matrix to use as history NEXT frame
         self.prev_view_proj = tmp;
+
+
 
         Ok(())
     }
@@ -738,6 +743,7 @@ impl Renderer {
 
         // Initializing push constant values
         let push_constants = vulkan_abstraction::RaytracingPushConstant {
+            prev_view_proj: self.prev_view_proj.as_slice().try_into().unwrap(),
             frame_count: self.frame_count,
             use_srgb: self.image_format == vk::Format::R8G8B8A8_SRGB,
             _padding: [0; 3],
