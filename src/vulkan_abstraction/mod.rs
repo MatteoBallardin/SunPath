@@ -25,3 +25,6 @@ pub(crate) use compute_pipeline::*;
 pub(crate) use shader_binding_table::*;
 pub(crate) use shader_data_buffers::*;
 pub use synchronization::*;
+
+pub use descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSets as TemporalAccumulationDescriptorSets;
+pub use  descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout as TemporalAccumulationDescriptorSetLayout;

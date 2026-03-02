@@ -13,8 +13,8 @@ use std::{collections::HashMap, rc::Rc};
 use ash::vk;
 
 use crate::utils::env_var_as_bool;
-use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, TemporalAccumulationDescriptorSetLayout, TemporalPass};
-
+use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, TemporalPass};
+use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 struct SpatialDenoiseImages {
     #[allow(unused)]
     pub image_1: vulkan_abstraction::Image,
@@ -36,13 +36,13 @@ struct ImageDependentData {
     #[allow(unused)]
     motion_vector_image: vulkan_abstraction::Image,
 
-    #[allow(unused)]
-    denoise_images: SpatialDenoiseImages,
+    //#[allow(unused)]
+    //denoise_images: SpatialDenoiseImages,
 
     #[allow(unused)]
     pub raytracing_descriptor_sets: vulkan_abstraction::RaytracingDescriptorSets,
     #[allow(unused)]
-    pub temporal_accumulation_descriptor_sets: vulkan_abstraction::TemporalAccumulationDescriptorSets,
+    pub temporal_accumulation_descriptor_sets: vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSets,
     #[allow(unused)]
     pub denoise_descriptor_sets: vulkan_abstraction::DenoiseDescriptorSets,
 }
