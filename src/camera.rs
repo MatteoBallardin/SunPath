@@ -19,6 +19,8 @@ impl Default for Camera {
 pub(crate) struct CameraMatrices {
     pub view_inverse: na::Matrix4<f32>,
     pub proj_inverse: na::Matrix4<f32>,
+    pub view_proj: na::Matrix4<f32>,
+    pub prev_view_proj: na::Matrix4<f32>,
 }
 
 impl Camera {
@@ -36,17 +38,23 @@ impl Camera {
         //clip_space: normalised coordinates adding perspective
         let projection = na::Perspective3::new(
             extent.width as f32 / extent.height as f32,
-            self.fov_y * 3.14 / std::f32::consts::PI,
+            self.fov_y.to_radians(),
             0.1,   //render everything after this distance
             100.0, //discard everything after this distance
         );
 
+        let view_homogeneous = view.to_homogeneous();
+        let proj_homogeneous = projection.to_homogeneous();
+
         let view_inverse = view.to_homogeneous().try_inverse().unwrap(); //view_space -> world_space
         let proj_inverse = projection.to_homogeneous().try_inverse().unwrap(); //clip_space -> view_space
+        let view_proj = proj_homogeneous * view_homogeneous;
 
         CameraMatrices {
             view_inverse,
             proj_inverse,
+            view_proj,
+            prev_view_proj: nalgebra::zero(),
         }
     }
 

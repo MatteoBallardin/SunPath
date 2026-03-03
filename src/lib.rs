@@ -13,15 +13,45 @@ use std::{collections::HashMap, rc::Rc};
 use ash::vk;
 
 use crate::utils::env_var_as_bool;
+use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, TemporalPass};
+use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
+use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
+
+pub const DENOISE_PASSES: u32 = 5;
+struct SpatialDenoiseImages {
+    #[allow(unused)]
+    pub image_1: vulkan_abstraction::Image,
+    #[allow(unused)]
+    pub image_2: vulkan_abstraction::Image,
+}
 
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
     pub blit_cmd_buf: vulkan_abstraction::CmdBuffer,
     #[allow(unused)]
     raytrace_result_image: vulkan_abstraction::Image,
+    #[allow(unused)]
+    denoise_result_image: vulkan_abstraction::Image,
+    #[allow(unused)]
+    postprocess_result_image: vulkan_abstraction::Image,
+    #[allow(unused)]
+    depth_image: vulkan_abstraction::Image,
+    #[allow(unused)]
+    normal_image: vulkan_abstraction::Image,
+    #[allow(unused)]
+    motion_vector_image: vulkan_abstraction::Image,
 
     #[allow(unused)]
-    pub descriptor_sets: vulkan_abstraction::DescriptorSets,
+    denoise_images: SpatialDenoiseImages,
+
+    #[allow(unused)]
+    pub raytracing_descriptor_sets: vulkan_abstraction::RaytracingDescriptorSets,
+    #[allow(unused)]
+    pub temporal_accumulation_descriptor_sets: vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSets,
+    #[allow(unused)]
+    pub denoise_descriptor_sets: vulkan_abstraction::DenoiseDescriptorSets,
+    #[allow(unused)]
+    pub postprocess_descriptor_sets: PostProcessDescriptorSets,
 }
 
 pub type CreateSurfaceFn = dyn Fn(&ash::Entry, &ash::Instance) -> SrResult<vk::SurfaceKHR>;
@@ -39,9 +69,18 @@ pub struct Renderer {
 
     shader_binding_table: vulkan_abstraction::ShaderBindingTable,
     ray_tracing_pipeline: vulkan_abstraction::RayTracingPipeline,
-    descriptor_set_layout: vulkan_abstraction::DescriptorSetLayout,
+
+    ray_tracing_descriptor_set_layout: vulkan_abstraction::RaytracingDescriptorSetLayout,
+    temporal_accumulation_descriptor_set_layout: TemporalAccumulationDescriptorSetLayout,
+    denoise_descriptor_set_layout: DenoiseDescriptorSetLayout,
+    postprocess_descriptor_set_layout: PostprocessDescriptorSetLayout,
+
     image_extent: vk::Extent3D,
     image_format: vk::Format,
+
+    temporal_accumulation_pipeline: vulkan_abstraction::ComputePipeline<TemporalPass>,
+    denoise_pipeline: vulkan_abstraction::ComputePipeline<DenoisePass>,
+    postprocess_pipeline: vulkan_abstraction::ComputePipeline<PostprocessPass>,
 
     fallback_texture_image: vulkan_abstraction::Image,
     fallback_texture_sampler: vulkan_abstraction::Sampler,
@@ -53,6 +92,8 @@ pub struct Renderer {
     //2 images to avoid race conditions when reading/writing
     pub accumulation_images: [vulkan_abstraction::Image; 2],
     pub frame_count: u32,
+
+    prev_view_proj: nalgebra::Matrix4<f32>,       //used to calculate motion vectors
 }
 
 impl Renderer {
@@ -97,12 +138,30 @@ impl Renderer {
         //must be filled by loading a scene
         let shader_data_buffers = vulkan_abstraction::ShaderDataBuffers::new_empty(Rc::clone(&core))?;
 
-        let descriptor_set_layout = vulkan_abstraction::DescriptorSetLayout::new(Rc::clone(&core))?;
+        let ray_tracing_descriptor_set_layout = vulkan_abstraction::RaytracingDescriptorSetLayout::new(Rc::clone(&core))?;
+        let temporal_accumulation_descriptor_set_layout = vulkan_abstraction::TemporalAccumulationDescriptorSetLayout::new(Rc::clone(&core))?;
+        let denoise_descriptor_set_layout = vulkan_abstraction::DenoiseDescriptorSetLayout::new(Rc::clone(&core))?;
+        let postprocess_descriptor_set_layout = PostprocessDescriptorSetLayout::new(Rc::clone(&core))?;
 
         let ray_tracing_pipeline = vulkan_abstraction::RayTracingPipeline::new(
             Rc::clone(&core),
-            &descriptor_set_layout,
+            &ray_tracing_descriptor_set_layout,
             env_var_as_bool(ENABLE_SHADER_DEBUG_SYMBOLS_ENV_VAR).unwrap_or(IS_DEBUG_BUILD),
+        )?;
+
+        let temporal_accumulation_pipeline = vulkan_abstraction::ComputePipeline::<TemporalPass>::new(
+            Rc::clone(&core),
+            temporal_accumulation_descriptor_set_layout.inner()
+        )?;
+
+        let denoise_pipeline = vulkan_abstraction::ComputePipeline::<DenoisePass>::new(
+            Rc::clone(&core),
+            denoise_descriptor_set_layout.inner(),
+        )?;
+
+        let postprocess_pipeline = vulkan_abstraction::ComputePipeline::<PostprocessPass>::new(
+            Rc::clone(&core),
+            postprocess_descriptor_set_layout.inner(),
         )?;
 
         let shader_binding_table = vulkan_abstraction::ShaderBindingTable::new(&core, &ray_tracing_pipeline)?;
@@ -178,15 +237,23 @@ impl Renderer {
 
                 shader_binding_table,
                 ray_tracing_pipeline,
-                descriptor_set_layout,
+                ray_tracing_descriptor_set_layout,
+                temporal_accumulation_descriptor_set_layout,
+                denoise_descriptor_set_layout,
+                postprocess_descriptor_set_layout,
 
                 blases,
                 tlas,
                 scene_images: Vec::new(),
                 scene_samplers: Vec::new(),
+                prev_view_proj: nalgebra::zero(),
 
                 image_extent,
                 image_format,
+
+                denoise_pipeline,
+                temporal_accumulation_pipeline,
+                postprocess_pipeline,
 
                 accumulation_images,
                 frame_count: 0,
@@ -204,8 +271,6 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, image_extent: (u32, u32)) -> SrResult<()> {
-
-
         let new_extent = utils::tuple_to_extent3d(image_extent);
         if new_extent == self.image_extent {
             return Ok(());
@@ -225,15 +290,61 @@ impl Renderer {
             )
         };
 
-
         self.accumulation_images = [
             create_accum_image("Accumulation_1")?,
             create_accum_image("Accumulation_2")?,
         ];
 
+        let device = self.core.device().inner();
+        let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(self.core.clone())?;
+
+        unsafe {
+            let begin_info = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
+
+            let create_barrier = |image: vk::Image| {
+                vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)
+            };
+
+            let barriers = [
+                create_barrier(self.accumulation_images[0].inner()),
+                create_barrier(self.accumulation_images[1].inner()),
+            ];
+
+            device.cmd_pipeline_barrier(
+                setup_cmd_buf.inner(),
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &barriers,
+            );
+
+            device.end_command_buffer(setup_cmd_buf.inner())?;
+
+            let fence = setup_cmd_buf.fence_mut().submit()?;
+            self.core.queue().submit_async(setup_cmd_buf.inner(), &[], &[], &[], fence)?;
+            setup_cmd_buf.fence_mut().wait()?;
+        }
+
         self.frame_count = 0;
 
-        //self.image_dependant_data
         Ok(())
     }
 
@@ -246,26 +357,198 @@ impl Renderer {
             let raytrace_result_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
-                vk::Format::R8G8B8A8_UNORM,
+                vk::Format::R32G32B32A32_SFLOAT,
                 vk::ImageTiling::OPTIMAL,
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
-                "sunray (internal, pre-blit) raytrace result image",
+                "sunray (preprocess) raytrace result image",
             )?;
 
-            let descriptor_sets = vulkan_abstraction::DescriptorSets::new(
+
+
+            let denoise_result_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
-                &self.descriptor_set_layout,
+                self.image_extent,
+                vk::Format::R32G32B32A32_SFLOAT,
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC,
+                "sunray (internal, pre-blit) denoise result image",
+            )?;
+
+            let postprocess_result_image = vulkan_abstraction::Image::new(
+                Rc::clone(&self.core),
+                self.image_extent,
+                vk::Format::R32G32B32A32_SFLOAT,
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST,
+                "sunray (internal, pre-blit) postprocess result image",
+            )?;
+
+            let depth_image = vulkan_abstraction::Image::new(
+                Rc::clone(&self.core),
+                self.image_extent,
+                vk::Format::R32_SFLOAT, // r32f in GLSL
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE,
+                "sunray depth image",
+            )?;
+
+            let normal_image = vulkan_abstraction::Image::new(
+                Rc::clone(&self.core),
+                self.image_extent,
+                vk::Format::R16G16B16A16_SFLOAT, // rgba16f in GLSL
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE,
+                "sunray normal image",
+            )?;
+
+            let motion_vector_image = vulkan_abstraction::Image::new(
+                Rc::clone(&self.core),
+                self.image_extent,
+                vk::Format::R16G16_SFLOAT, // rg16f in GLSL
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE,
+                "sunray motion vector image",
+            )?;
+
+            let spatial_image_1 = vulkan_abstraction::Image::new(
+                Rc::clone(&self.core),
+                self.image_extent,
+                vk::Format::R32G32B32A32_SFLOAT,
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE,
+                "denoise spatial image 1",
+            )?;
+
+            let spatial_image_2 = vulkan_abstraction::Image::new(
+                Rc::clone(&self.core),
+                self.image_extent,
+                vk::Format::R32G32B32A32_SFLOAT,
+                vk::ImageTiling::OPTIMAL,
+                gpu_allocator::MemoryLocation::GpuOnly,
+                vk::ImageUsageFlags::STORAGE,
+                "denoise spatial image 2",
+            )?;
+
+
+
+
+            //Initializer block for g buffer images
+            {
+                let device = self.core.device().inner();
+                let mut setup_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
+
+                unsafe {
+                    let begin_info = vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                    device.begin_command_buffer(setup_cmd_buf.inner(), &begin_info)?;
+
+                    let create_barrier = |image: vk::Image| {
+                        vk::ImageMemoryBarrier::default()
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::GENERAL)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .image(image)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .src_access_mask(vk::AccessFlags::empty())
+                            .dst_access_mask(vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::SHADER_READ)
+                    };
+
+                    // Add all the newly created G-Buffer and output images
+                    let barriers = [
+                        create_barrier(raytrace_result_image.inner()),
+                        create_barrier(denoise_result_image.inner()),
+                        create_barrier(depth_image.inner()),
+                        create_barrier(normal_image.inner()),
+                        create_barrier(motion_vector_image.inner()),
+                        create_barrier(spatial_image_1.inner()),
+                        create_barrier(spatial_image_2.inner()),
+                    ];
+
+
+
+                    device.cmd_pipeline_barrier(
+                        setup_cmd_buf.inner(),
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR
+                            | vk::PipelineStageFlags::COMPUTE_SHADER
+                            | vk::PipelineStageFlags::TRANSFER, // Added TRANSFER for the blit cmd buf later
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &barriers,
+                    );
+
+                    device.end_command_buffer(setup_cmd_buf.inner())?;
+
+                    // Submit to GPU and immediately wait for it to finish
+                    let fence = setup_cmd_buf.fence_mut().submit()?;
+                    self.core.queue().submit_async(
+                        setup_cmd_buf.inner(),
+                        &[],
+                        &[],
+                        &[],
+                        fence,
+                    )?;
+
+                    // Block the CPU so we guarantee the transitions are done before rendering starts
+                    setup_cmd_buf.fence_mut().wait()?;
+                }
+            }
+
+            let raytracing_descriptor_sets = vulkan_abstraction::RaytracingDescriptorSets::new(
+                Rc::clone(&self.core),
+                &self.ray_tracing_descriptor_set_layout,
                 &self.tlas,
-                raytrace_result_image.image_view(),
+                &raytrace_result_image, // Raw color output
+                &depth_image,           // G-Buffer Depth
+                &normal_image,          // G-Buffer Normals
+                &motion_vector_image,   // G-Buffer Motion
                 &self.shader_data_buffers,
             )?;
 
-            descriptor_sets.update_accumulation_images(&self.accumulation_images, self.default_sampler.inner());
+            let temporal_accumulation_descriptor_sets = vulkan_abstraction::TemporalAccumulationDescriptorSets::new(
+                &self.core, // Passed as &Rc<Core> based on our previous struct signature
+                &self.temporal_accumulation_descriptor_set_layout,
+                &raytrace_result_image,       // Binding 0: Noisy Input
+                &motion_vector_image,         // Binding 1: Motion Vectors
+                &self.accumulation_images,    // Binding 2: Ping-Pong Output (Storage)
+                &self.accumulation_images,    // Binding 3: Ping-Pong History (Samplers)
+                self.default_sampler.inner(),
+            )?;
+
+            let denoise_descriptor_sets = vulkan_abstraction::DenoiseDescriptorSets::new(
+                Rc::clone(&self.core),
+                &self.denoise_descriptor_set_layout,
+                &self.accumulation_images,
+                &depth_image,
+                &normal_image,
+                &denoise_result_image,
+            )?;
+
+            let postprocess_descriptor_sets = vulkan_abstraction::PostProcessDescriptorSets::new(
+                Rc::clone(&self.core),
+                &self.postprocess_descriptor_set_layout,
+                &denoise_result_image,
+                &postprocess_result_image,
+            )?;
 
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
             let raytracing_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
-            
+            let denoise_images = SpatialDenoiseImages {image_1: spatial_image_1, image_2: spatial_image_2};
 
             //record blit
             {
@@ -281,10 +564,10 @@ impl Renderer {
                 Self::cmd_blit_image(
                     &self.core,
                     blit_cmd_buf.inner(),
-                    raytrace_result_image.inner(),
-                    raytrace_result_image.extent(),
+                    denoise_result_image.inner(),
+                    denoise_result_image.extent(),
                     *post_blit_image,
-                    raytrace_result_image.image_subresource_range(),
+                    denoise_result_image.image_subresource_range(),
                 )?;
 
                 unsafe { self.core.device().inner().end_command_buffer(blit_cmd_buf.inner()) }?;
@@ -294,9 +577,18 @@ impl Renderer {
                 *post_blit_image,
                 ImageDependentData {
                     raytrace_result_image,
+                    denoise_result_image,
+                    postprocess_result_image,
+                    depth_image,
+                    normal_image,
+                    motion_vector_image,
                     raytracing_cmd_buf,
                     blit_cmd_buf,
-                    descriptor_sets,
+                    denoise_images,
+                    raytracing_descriptor_sets,
+                    temporal_accumulation_descriptor_sets,
+                    denoise_descriptor_sets,
+                    postprocess_descriptor_sets,
                 },
             );
         }
@@ -338,7 +630,24 @@ impl Renderer {
     }
 
     pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
-        self.shader_data_buffers.set_matrices(camera.as_matrices(self.image_extent))
+        let mut matrices = camera.as_matrices(self.image_extent);
+
+        // Inject the history matrix saved from the last frame
+        matrices.prev_view_proj = self.prev_view_proj;
+        let tmp = matrices.view_proj;
+
+        
+
+        // Upload the struct to the uniform buffer
+        self.shader_data_buffers.set_matrices(matrices)?;
+
+
+        // Save the current frame's matrix to use as history NEXT frame
+        self.prev_view_proj = tmp;
+
+
+
+        Ok(())
     }
 
     /// Render to dst_image. the user may also pass a Semaphore which the user should signal when the image is
@@ -357,12 +666,20 @@ impl Renderer {
 
         // Raytracing
         img_dependent_data.raytracing_cmd_buf.fence_mut().wait()?;
+        img_dependent_data.blit_cmd_buf.fence_mut().wait()?;
 
         let cmd_buf = img_dependent_data.raytracing_cmd_buf.inner();
         let result_image = img_dependent_data.raytrace_result_image.inner();
+        let motion_vector_image = img_dependent_data.motion_vector_image.inner();
+        let denoised_image = img_dependent_data.denoise_result_image.inner();
+        let postprocessed_image = img_dependent_data.postprocess_result_image.inner();
         let result_extent = img_dependent_data.raytrace_result_image.extent();
+        let denoiser_images  = vec![img_dependent_data.denoise_images.image_1.inner(), img_dependent_data.denoise_images.image_2.inner()];
 
-        let descriptor_sets_ptr = &img_dependent_data.descriptor_sets as *const vulkan_abstraction::DescriptorSets;
+        let raytracing_descriptor_sets_ptr = &img_dependent_data.raytracing_descriptor_sets as *const vulkan_abstraction::RaytracingDescriptorSets;
+        let temporal_accumulation_descriptor_sets_ptr = &img_dependent_data.temporal_accumulation_descriptor_sets as *const vulkan_abstraction::TemporalAccumulationDescriptorSets;
+        let denoise_descriptor_sets_ptr = &img_dependent_data.denoise_descriptor_sets as *const vulkan_abstraction::DenoiseDescriptorSets;
+        let postprocess_descriptor_sets_ptr = &img_dependent_data.postprocess_descriptor_sets as *const vulkan_abstraction::PostProcessDescriptorSets;
 
 
         unsafe {
@@ -376,12 +693,95 @@ impl Renderer {
 
             (*this_ptr).cmd_raytracing_render(
                 cmd_buf,
-                &*descriptor_sets_ptr, // Dereference back to reference
+                &*raytracing_descriptor_sets_ptr, // Dereference back to reference
                 result_image,
                 result_extent,
             )?;
 
+            let memory_barrier = vk::MemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Wait for RT to finish writing
+                .dst_access_mask(vk::AccessFlags::SHADER_READ); // Make sure Denoise can see the data
+
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Source Stage
+                vk::PipelineStageFlags::COMPUTE_SHADER,         // Destination Stage (Denoising is usually compute)
+                vk::DependencyFlags::empty(),
+                &[memory_barrier], // Use a global memory barrier for simplicity
+                &[],
+                &[],
+            );
+
+            (*this_ptr).cmd_temporal_accumulation(
+                cmd_buf,
+                &*temporal_accumulation_descriptor_sets_ptr,
+                result_extent.width,
+                result_extent.height,
+                result_image,         // Raw RT output
+                motion_vector_image,  // From G-buffer
+                &self.accumulation_images,
+            )?;
+
+            // Find which image Temporal just wrote to so Denoise knows what to read
+            let accum_idx = ((self.frame_count + 1) % 2) as usize;
+            let current_temporal_image = self.accumulation_images[accum_idx].inner();
+
+            for i in 0..DENOISE_PASSES {
+
+                let read_idx: usize = ((i + 1) % 2) as usize;
+                let write_idx = (i % 2) as usize;
+
+                if i == 0 {
+                    (*this_ptr).cmd_denoise_image(
+                        cmd_buf, &*denoise_descriptor_sets_ptr,
+                        result_extent.width, result_extent.height,
+                        current_temporal_image, // Initial input
+                        denoiser_images[0],     // First workspace
+                        i,
+                    )?;
+                } else {
+                    (*this_ptr).cmd_denoise_image(
+                        cmd_buf, &*denoise_descriptor_sets_ptr,
+                        result_extent.width, result_extent.height,
+                        denoiser_images[read_idx],
+                        denoiser_images[write_idx],
+                        i,
+                    )?;
+                }
+
+                // --- CRITICAL: Add the barrier here ---
+                let barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+
+                unsafe {
+                    device.cmd_pipeline_barrier(
+                        cmd_buf,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[barrier], &[], &[]
+                    );
+                }
+
+            }
+
+
+
+            (*this_ptr).cmd_postprocess_image(
+                cmd_buf,
+                &*postprocess_descriptor_sets_ptr,
+                result_extent.width,
+                result_extent.height,
+                denoiser_images[(DENOISE_PASSES % 2) as usize],
+                postprocessed_image,
+            )?;
+
+
+
+
             device.end_command_buffer(cmd_buf)?;
+
 
             // Submit using (*this_ptr)
             (*this_ptr).core.queue().submit_async(
@@ -392,6 +792,7 @@ impl Renderer {
                 img_dependent_data.raytracing_cmd_buf.fence_mut().submit()?,
             )?;
         }
+
 
         // Blitting
         let (wait_sems, wait_dst_stages) = ([wait_sem], [vk::PipelineStageFlags::ALL_GRAPHICS]);
@@ -437,7 +838,7 @@ impl Renderer {
     fn cmd_raytracing_render(
         &mut self,
         cmd_buf: vk::CommandBuffer,
-        descriptor_sets: &vulkan_abstraction::DescriptorSets,
+        descriptor_sets: &vulkan_abstraction::RaytracingDescriptorSets,
         image: vk::Image,
         extent: vk::Extent3D,
     ) -> SrResult<()> {
@@ -457,7 +858,8 @@ impl Renderer {
         };
 
         // Initializing push constant values
-        let push_constants = vulkan_abstraction::PushConstant {
+        let push_constants = vulkan_abstraction::RaytracingPushConstant {
+            prev_view_proj: self.prev_view_proj.as_slice().try_into().unwrap(),
             frame_count: self.frame_count,
             use_srgb: self.image_format == vk::Format::R8G8B8A8_SRGB,
             _padding: [0; 3],
@@ -556,8 +958,8 @@ impl Renderer {
                 vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR,
                 0,
                 &std::mem::transmute::<
-                    vulkan_abstraction::PushConstant,
-                    [u8; std::mem::size_of::<vulkan_abstraction::PushConstant>()],
+                    vulkan_abstraction::RaytracingPushConstant,
+                    [u8; std::mem::size_of::<vulkan_abstraction::RaytracingPushConstant>()],
                 >(push_constants), //TODO: comment this transmute
             );
             self.core.rt_pipeline_device().cmd_trace_rays(
@@ -575,6 +977,323 @@ impl Renderer {
         Ok(())
     }
 
+    fn cmd_temporal_accumulation(
+        &self,
+        cmd_buf: vk::CommandBuffer,
+        descriptor_sets: &vulkan_abstraction::TemporalAccumulationDescriptorSets,
+        width: u32,
+        height: u32,
+        raw_rt_image: vk::Image,
+        motion_vector_image: vk::Image,
+        accumulation_images: &[vulkan_abstraction::image::Image; 2],
+    ) -> SrResult<()> {
+        let device = self.core.device().inner();
+
+        let history_idx = (self.frame_count % 2) as usize;
+        let accum_idx = ((self.frame_count + 1) % 2) as usize;
+
+        // 1. Prepare inputs (RT Image and Motion Vectors)
+        let rt_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(raw_rt_image)
+            .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+
+        let mv_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Assuming written in G-Buffer pass
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(motion_vector_image)
+            .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+
+        // 2. Prepare Ping-Pong Images
+        // The one we write to:
+        let write_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::empty()) // Don't care what it was doing before
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED) // Discard old contents
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(accumulation_images[accum_idx].inner())
+            .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+
+        let history_old_layout = if self.frame_count == 0 {
+            vk::ImageLayout::UNDEFINED
+        } else {
+            vk::ImageLayout::GENERAL
+        };
+
+        let history_src_access = if self.frame_count == 0 {
+            vk::AccessFlags::empty()
+        } else {
+            vk::AccessFlags::SHADER_WRITE
+        };
+
+        // The one we read from (History):
+        let read_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(history_src_access) // Written to last frame
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(history_old_layout)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(accumulation_images[history_idx].inner())
+            .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Wait for RT
+                vk::PipelineStageFlags::COMPUTE_SHADER,         // Block Temporal
+                vk::DependencyFlags::empty(),
+                &[], &[],
+                &[rt_barrier, mv_barrier, write_barrier, read_barrier],
+            );
+
+            device.cmd_bind_pipeline(cmd_buf, vk::PipelineBindPoint::COMPUTE, self.temporal_accumulation_pipeline.inner());
+
+            device.cmd_bind_descriptor_sets(
+                cmd_buf, vk::PipelineBindPoint::COMPUTE, self.temporal_accumulation_pipeline.layout(), 0,
+                descriptor_sets.inner(), // Has all bindings combined
+                &[],
+            );
+
+            device.cmd_push_constants(
+                cmd_buf, self.temporal_accumulation_pipeline.layout(), vk::ShaderStageFlags::COMPUTE, 0,
+                &self.frame_count.to_ne_bytes(),
+            );
+
+            let group_x = (width + 15) / 16;
+            let group_y = (height + 15) / 16;
+            device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
+        }
+
+        Ok(())
+    }
+
+    fn cmd_denoise_image(
+        &self,
+        cmd_buf: vk::CommandBuffer,
+        descriptor_sets: &vulkan_abstraction::DenoiseDescriptorSets,
+        width: u32,
+        height: u32,
+        input_image:  vk::Image,
+        output_image:  vk::Image,
+        step_width: u32,
+    ) -> SrResult<()> {
+        let device = self.core.device().inner();
+
+        let input_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // RT wrote to it
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)  // Denoise reads it
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(input_image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        // Ensure the output image is ready to be written to
+        let output_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::empty())      // Don't care what it was before
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE) // Denoise writes to it
+            .old_layout(vk::ImageLayout::UNDEFINED)         // Discard previous content
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(output_image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let push_constants = vulkan_abstraction::DenoisePushConstant {
+            frame_count: self.frame_count,
+            step_width,
+        };
+
+        unsafe{
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Wait for RT
+                vk::PipelineStageFlags::COMPUTE_SHADER,         // Block Compute
+                vk::DependencyFlags::empty(),
+                &[], &[],
+                &[input_barrier, output_barrier]
+            );
+
+            device.cmd_bind_pipeline(
+                cmd_buf,
+                vk::PipelineBindPoint::COMPUTE,
+                self.denoise_pipeline.inner(),
+            );
+
+            let accum_idx = (self.frame_count + 1) % 2;
+
+            device.cmd_bind_descriptor_sets(
+                cmd_buf,
+                vk::PipelineBindPoint::COMPUTE,
+                self.denoise_pipeline.layout(),
+                0,
+                &[descriptor_sets.inner()[accum_idx as usize]],
+                &[],
+            );
+
+            device.cmd_push_constants(
+                cmd_buf,
+                self.denoise_pipeline.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                &std::mem::transmute::<
+                    vulkan_abstraction::DenoisePushConstant,
+                    [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()],
+                >(push_constants),
+            );
+        }
+
+
+
+
+        let group_x = (width + 15) / 16;
+        let group_y = (height + 15) / 16;
+        unsafe {
+            device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
+        }
+
+
+        let post_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Denoise wrote it
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ) // Blit reads it
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(output_image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::COMPUTE_SHADER, // Wait for Denoise
+                vk::PipelineStageFlags::TRANSFER,       // Block Transfer (Blit)
+                vk::DependencyFlags::empty(),
+                &[], &[],
+                &[post_barrier]
+            );
+        }
+
+
+        Ok(())
+
+    }
+
+    fn cmd_postprocess_image(
+        &self,
+        cmd_buf: vk::CommandBuffer,
+        descriptor_sets: &vulkan_abstraction::PostProcessDescriptorSets,
+        width: u32,
+        height: u32,
+        input_image:  vk::Image,
+        output_image:  vk::Image,
+    ) -> SrResult<()> {
+        let device = self.core.device().inner();
+
+        // 1. Synchronize: Wait for Denoise (Compute) to finish writing to input_image
+        let input_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(input_image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        // Ensure final output image is ready
+        let output_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(output_image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::COMPUTE_SHADER, // Wait for Denoise
+                vk::PipelineStageFlags::COMPUTE_SHADER, // Block Post-process
+                vk::DependencyFlags::empty(),
+                &[], &[],
+                &[input_barrier, output_barrier]
+            );
+
+            device.cmd_bind_pipeline(
+                cmd_buf,
+                vk::PipelineBindPoint::COMPUTE,
+                self.postprocess_pipeline.inner(),
+            );
+
+            device.cmd_bind_descriptor_sets(
+                cmd_buf,
+                vk::PipelineBindPoint::COMPUTE,
+                self.postprocess_pipeline.layout(),
+                0,
+                descriptor_sets.inner(), // Assuming PostProcessDescriptorSets has an inner() returning vk::DescriptorSet
+                &[],
+            );
+
+            // Dispatch post-process shader
+            let group_x = (width + 15) / 16;
+            let group_y = (height + 15) / 16;
+            device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
+
+            // Final barrier: Ensure post-process is done before the Blit/Transfer starts
+            let final_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(output_image)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            device.cmd_pipeline_barrier(
+                cmd_buf,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[], &[],
+                &[final_barrier]
+            );
+        }
+
+        Ok(())
+    }
     fn cmd_blit_image(
         core: &vulkan_abstraction::Core,
         cmd_buf: vk::CommandBuffer,

@@ -5,14 +5,14 @@
 #include <shaders/common.glsl>
 #include <shaders/utils.glsl>
 
-#include <shaders/temporal_accumulation.glsl>
+layout(set = 0, binding = 1, rgba32f) uniform image2D raw_color_image; // This used to be your final output
+
+layout(set = 0, binding = 5, r32f) uniform image2D depth_image;
+layout(set = 0, binding = 6, rgba16f) uniform image2D normal_image;
+layout(set = 0, binding = 7, rg16f) uniform image2D motion_vector_image;
 
 layout(location = 0) rayPayloadEXT ray_payload_t prd;
 
-
-
-layout(set = 0, binding = 5) uniform sampler2D historyTextures[2];
-layout(set = 0, binding = 6, rgba32f) uniform image2D accumulationImages[2];
 
 uint seed;
 float rnd() {
@@ -39,15 +39,13 @@ vec3 get_random_bounce(vec3 normal) {
 void main() {
 
     vec3 total_radiance = vec3(0.0);
-    int SAMPLES = 5;
+    int SAMPLES = 1;
     init_rng(gl_LaunchIDEXT.xy, frame_count);
     for(int i = 0; i < SAMPLES; i++){
         const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
         const vec2 inUV = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
         vec2 d = inUV * 2.0 - 1.0;
         d.y = -d.y;
-
-        // TODO: Pass actual frame count from Rust push constants later.
 
 
         vec4 origin    = matrices_uniform_buffer.view_inverse * vec4(0, 0, 0, 1);
@@ -63,6 +61,35 @@ void main() {
         for (int bounce = 0; bounce < 5; bounce++) {
             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, rayOrigin, 0.001, rayDir, 10000.0, 0);
 
+            // one time calculation of g-buffer values (depth, normal)
+            if (bounce == 0) {
+
+                float depth_value;
+                vec3 normal_value;
+                vec2 motion_value;
+                vec2 test;
+
+                if (prd.type == 1) { // Hit sky
+                    depth_value = 100000.0; // Infinite distance
+                    normal_value = vec3(0.0,0.0,0.0);
+                    motion_value = vec2(0.0, 0.0);
+                } else {
+                    depth_value = prd.dist;
+                    normal_value = prd.normal;
+                    vec3 world_pos = rayOrigin + rayDir * prd.dist;
+                    vec4 prev_clip = prev_view_proj * vec4(world_pos, 1.0);
+
+                    vec2 prev_ndc = prev_clip.xy / prev_clip.w;
+                    vec2 prev_uv = vec2(prev_ndc.x, -prev_ndc.y) * 0.5 + 0.5;
+
+                    motion_value = inUV - prev_uv;
+                    test = prev_uv;
+                }
+                imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(normal_value, 0.0));
+                imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(depth_value, 0.0, 0.0, 0.0));
+                imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(motion_value, 0.0, 0.0));
+            }
+
             //Hit sky
             if (prd.type == 1) {
                 radiance += vec3(0.05, 0.05, 0.1) * throughput; // Ambient Sky Color
@@ -72,7 +99,12 @@ void main() {
             //Hit Object
             vec3 hitPos = rayOrigin + rayDir * prd.dist;
 
+            float brightness = max(prd.emission.r, max(prd.emission.g, prd.emission.b));
             radiance += prd.emission * throughput;
+
+            if (brightness > 1.0) {
+                break;
+            }
 
             throughput *= prd.albedo;
 
@@ -94,36 +126,10 @@ void main() {
         }
 
         total_radiance += radiance;
-
+        total_radiance = min(total_radiance, 10.0);
     }
 
     vec3 current_frame_color = total_radiance / float(SAMPLES);
 
-
-    uint history_idx = frame_count % 2;
-    uint accum_idx = (frame_count + 1) % 2;
-    // ----------------------
-
-    // temporal accumulation logic
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    const vec2 uv = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
-
-
-    vec3 history_color;
-
-    if (frame_count == 0) {
-
-        //history_color = vec3(1.0, 0.0,0.0);
-        history_color = current_frame_color;
-    } else {
-        history_color = texture(historyTextures[history_idx], uv).rgb;
-        //history_color = vec3(0.0, 0.0,1.0);
-    }
-
-    vec3 accumulated_color = mix(history_color, current_frame_color, 0.1);
-
-    //current_frame_color = vec3(0.0, 1.0, 0.0);
-    imageStore(accumulationImages[accum_idx], ivec2(gl_LaunchIDEXT.xy), vec4(accumulated_color, 1.0));
-
-    imageStore(image, ivec2(gl_LaunchIDEXT.xy), vec4(accumulated_color, 1.0));
+    imageStore(raw_color_image, ivec2(gl_LaunchIDEXT.xy), vec4(current_frame_color, 1.0));
 }
