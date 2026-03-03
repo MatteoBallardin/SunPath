@@ -16,6 +16,8 @@ use crate::utils::env_var_as_bool;
 use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, TemporalPass};
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
+
+pub const DENOISE_PASSES: u32 = 5;
 struct SpatialDenoiseImages {
     #[allow(unused)]
     pub image_1: vulkan_abstraction::Image,
@@ -672,6 +674,7 @@ impl Renderer {
         let denoised_image = img_dependent_data.denoise_result_image.inner();
         let postprocessed_image = img_dependent_data.postprocess_result_image.inner();
         let result_extent = img_dependent_data.raytrace_result_image.extent();
+        let denoiser_images  = vec![img_dependent_data.denoise_images.image_1.inner(), img_dependent_data.denoise_images.image_2.inner()];
 
         let raytracing_descriptor_sets_ptr = &img_dependent_data.raytracing_descriptor_sets as *const vulkan_abstraction::RaytracingDescriptorSets;
         let temporal_accumulation_descriptor_sets_ptr = &img_dependent_data.temporal_accumulation_descriptor_sets as *const vulkan_abstraction::TemporalAccumulationDescriptorSets;
@@ -723,23 +726,54 @@ impl Renderer {
             let accum_idx = ((self.frame_count + 1) % 2) as usize;
             let current_temporal_image = self.accumulation_images[accum_idx].inner();
 
-            //denoised_image = current_temporal_image;
+            for i in 0..DENOISE_PASSES {
 
-            (*this_ptr).cmd_denoise_image(
-                cmd_buf,
-                &*denoise_descriptor_sets_ptr,
-                result_extent.width,
-                result_extent.height,
-                current_temporal_image,
-                denoised_image,
-            )?;
+                let read_idx: usize = ((i + 1) % 2) as usize;
+                let write_idx = (i % 2) as usize;
+
+                if i == 0 {
+                    (*this_ptr).cmd_denoise_image(
+                        cmd_buf, &*denoise_descriptor_sets_ptr,
+                        result_extent.width, result_extent.height,
+                        current_temporal_image, // Initial input
+                        denoiser_images[0],     // First workspace
+                        i,
+                    )?;
+                } else {
+                    (*this_ptr).cmd_denoise_image(
+                        cmd_buf, &*denoise_descriptor_sets_ptr,
+                        result_extent.width, result_extent.height,
+                        denoiser_images[read_idx],
+                        denoiser_images[write_idx],
+                        i,
+                    )?;
+                }
+
+                // --- CRITICAL: Add the barrier here ---
+                let barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+
+                unsafe {
+                    device.cmd_pipeline_barrier(
+                        cmd_buf,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[barrier], &[], &[]
+                    );
+                }
+
+            }
+
+
 
             (*this_ptr).cmd_postprocess_image(
                 cmd_buf,
                 &*postprocess_descriptor_sets_ptr,
                 result_extent.width,
                 result_extent.height,
-                denoised_image,
+                denoiser_images[(DENOISE_PASSES % 2) as usize],
                 postprocessed_image,
             )?;
 
@@ -1045,6 +1079,7 @@ impl Renderer {
         height: u32,
         input_image:  vk::Image,
         output_image:  vk::Image,
+        step_width: u32,
     ) -> SrResult<()> {
         let device = self.core.device().inner();
 
@@ -1079,7 +1114,7 @@ impl Renderer {
 
         let push_constants = vulkan_abstraction::DenoisePushConstant {
             frame_count: self.frame_count,
-            step_width: 2,
+            step_width,
         };
 
         unsafe{
