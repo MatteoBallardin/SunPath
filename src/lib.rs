@@ -18,12 +18,6 @@ use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::Post
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 
 pub const DENOISE_PASSES: u32 = 5;
-struct SpatialDenoiseImages {
-    #[allow(unused)]
-    pub image_1: vulkan_abstraction::Image,
-    #[allow(unused)]
-    pub image_2: vulkan_abstraction::Image,
-}
 
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -40,9 +34,6 @@ struct ImageDependentData {
     normal_image: vulkan_abstraction::Image,
     #[allow(unused)]
     motion_vector_image: vulkan_abstraction::Image,
-
-    #[allow(unused)]
-    denoise_images: SpatialDenoiseImages,
 
     #[allow(unused)]
     pub raytracing_descriptor_sets: vulkan_abstraction::RaytracingDescriptorSets,
@@ -88,9 +79,9 @@ pub struct Renderer {
 
     core: Rc<vulkan_abstraction::Core>,
 
-    //used for temporal denoising/antialiasing
     //2 images to avoid race conditions when reading/writing
     pub accumulation_images: [vulkan_abstraction::Image; 2],
+    pub denoising_images: [vulkan_abstraction::Image; 2],
     pub frame_count: u32,
 
     prev_view_proj: nalgebra::Matrix4<f32>,       //used to calculate motion vectors
@@ -185,6 +176,11 @@ impl Renderer {
             create_accum_image("Accumulation_Pong")?,
         ];
 
+        let denoising_images = [
+            create_accum_image("Denoise_Ping")?,
+            create_accum_image("Denoise_Pong")?,
+        ];
+
         let fallback_texture_image = {
             const RESOLUTION: u32 = 64;
             let image_data = utils::iterate_image_extent(RESOLUTION, RESOLUTION)
@@ -256,6 +252,7 @@ impl Renderer {
                 postprocess_pipeline,
 
                 accumulation_images,
+                denoising_images,
                 frame_count: 0,
 
                 fallback_texture_image,
@@ -548,7 +545,6 @@ impl Renderer {
 
             let blit_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
             let raytracing_cmd_buf = vulkan_abstraction::CmdBuffer::new(Rc::clone(&self.core))?;
-            let denoise_images = SpatialDenoiseImages {image_1: spatial_image_1, image_2: spatial_image_2};
 
             //record blit
             {
@@ -584,7 +580,6 @@ impl Renderer {
                     motion_vector_image,
                     raytracing_cmd_buf,
                     blit_cmd_buf,
-                    denoise_images,
                     raytracing_descriptor_sets,
                     temporal_accumulation_descriptor_sets,
                     denoise_descriptor_sets,
@@ -674,7 +669,6 @@ impl Renderer {
         let denoised_image = img_dependent_data.denoise_result_image.inner();
         let postprocessed_image = img_dependent_data.postprocess_result_image.inner();
         let result_extent = img_dependent_data.raytrace_result_image.extent();
-        let denoiser_images  = vec![img_dependent_data.denoise_images.image_1.inner(), img_dependent_data.denoise_images.image_2.inner()];
 
         let raytracing_descriptor_sets_ptr = &img_dependent_data.raytracing_descriptor_sets as *const vulkan_abstraction::RaytracingDescriptorSets;
         let temporal_accumulation_descriptor_sets_ptr = &img_dependent_data.temporal_accumulation_descriptor_sets as *const vulkan_abstraction::TemporalAccumulationDescriptorSets;
@@ -736,15 +730,15 @@ impl Renderer {
                         cmd_buf, &*denoise_descriptor_sets_ptr,
                         result_extent.width, result_extent.height,
                         current_temporal_image, // Initial input
-                        denoiser_images[0],     // First workspace
+                        self.denoising_images[0].inner(),     // First workspace
                         i,
                     )?;
                 } else {
                     (*this_ptr).cmd_denoise_image(
                         cmd_buf, &*denoise_descriptor_sets_ptr,
                         result_extent.width, result_extent.height,
-                        denoiser_images[read_idx],
-                        denoiser_images[write_idx],
+                        self.denoising_images[read_idx].inner(),
+                        self.denoising_images[write_idx].inner(),
                         i,
                     )?;
                 }
@@ -773,7 +767,7 @@ impl Renderer {
                 &*postprocess_descriptor_sets_ptr,
                 result_extent.width,
                 result_extent.height,
-                denoiser_images[(DENOISE_PASSES % 2) as usize],
+                self.denoising_images[(DENOISE_PASSES % 2) as usize].inner(),
                 postprocessed_image,
             )?;
 
