@@ -9,7 +9,7 @@ pub struct DenoiseDescriptorSetLayout {
 }
 
 impl DenoiseDescriptorSetLayout {
-    pub const TEMPORAL_RESULT_BINDING: u32 = 0; // Input from Temporal Pass
+    pub const INPUT_BINDING: u32 = 0; // Input from Temporal Pass
     pub const DEPTH_BINDING: u32 = 1;           // Edge preservation
     pub const NORMAL_BINDING: u32 = 2;          // Edge preservation
     pub const FINAL_OUTPUT_BINDING: u32 = 3;    // Final image to the screen
@@ -21,20 +21,20 @@ impl DenoiseDescriptorSetLayout {
 
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
-                .binding(Self::TEMPORAL_RESULT_BINDING)
+                .binding(Self::INPUT_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
 
             vk::DescriptorSetLayoutBinding::default()
                 .binding(Self::DEPTH_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
 
             vk::DescriptorSetLayoutBinding::default()
                 .binding(Self::NORMAL_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
 
@@ -87,101 +87,82 @@ impl DenoiseDescriptorSets {
     pub fn new(
         core: Rc<vulkan_abstraction::Core>,
         layout: &DenoiseDescriptorSetLayout,
-        temporal_results: &[vulkan_abstraction::Image; 2], // Pass the accumulation array from the Temporal pass here
+        temporal_results: &[vulkan_abstraction::Image; 2],
         depth_image: &vulkan_abstraction::Image,
         normal_image: &vulkan_abstraction::Image,
-        output_image: &vulkan_abstraction::Image, // The final output image
+        denoise_ping_pong_images: &[vulkan_abstraction::Image; 2],
+        sampler: vk::Sampler,
     ) -> SrResult<Self> {
         let device = core.device().inner();
 
-        // 1. Pool Sizes (4 Storage Images per set * 2 Sets = 8 Storage Images total)
+        // 1. Pool Sizes: 2 Storage Images per set * 3 Sets = 6 total
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(8),
+                .descriptor_count(6),
+                vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(6),
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .pool_sizes(&pool_sizes)
-            .max_sets(2); // Allocate 2 sets!
+            .max_sets(3);
 
         let descriptor_pool = unsafe { device.create_descriptor_pool(&pool_info, None)? };
 
-        // 2. Allocate Descriptor Sets
-        let set_layouts = [layout.inner(), layout.inner()]; // Layout used twice
-
+        // 2. Allocate 3 Descriptor Sets
+        let set_layouts = [layout.inner(), layout.inner(), layout.inner()];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&set_layouts);
 
         let descriptor_sets = unsafe { device.allocate_descriptor_sets(&alloc_info)? };
 
-        // Helper
         let create_info = |img: &vulkan_abstraction::Image| {
             vk::DescriptorImageInfo::default()
                 .image_layout(vk::ImageLayout::GENERAL)
                 .image_view(img.image_view())
         };
 
-        // 3. Image Infos
-        let depth_info = create_info(depth_image);
-        let normal_info = create_info(normal_image);
-        let output_info = create_info(output_image);
+        let create_sampled_info = |img: &vulkan_abstraction::Image| {
+            vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(img.image_view())
+                .sampler(sampler)
+        };
 
-        let temporal_info_0 = create_info(&temporal_results[0]);
-        let temporal_info_1 = create_info(&temporal_results[1]);
+        // Common Textures
+        let depth_info = create_sampled_info(depth_image);
+        let normal_info = create_sampled_info(normal_image);
 
-        let writes = [
-            // ---------------- SET 0 ----------------
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[0])
-                .dst_binding(DenoiseDescriptorSetLayout::TEMPORAL_RESULT_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&temporal_info_0)),
+        // Ping-Pong specific infos
+        let temp_0 = create_info(&temporal_results[0]);
+        let temp_1 = create_info(&temporal_results[1]);
+        let denoise_0 = create_info(&denoise_ping_pong_images[0]);
+        let denoise_1 = create_info(&denoise_ping_pong_images[1]);
 
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[0])
-                .dst_binding(DenoiseDescriptorSetLayout::DEPTH_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&depth_info)),
+        let mut writes = Vec::new();
 
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[0])
-                .dst_binding(DenoiseDescriptorSetLayout::NORMAL_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&normal_info)),
+        // --- SET 0: Initial Pass (Temporal 0 -> Denoise 0) ---
+        // Note: You can swap temp_0 for temp_1 based on frame_count in the caller,
+        // or just update this specific binding every frame.
+        writes.push(self::create_write(descriptor_sets[0], DenoiseDescriptorSetLayout::INPUT_BINDING, &temp_0, vk::DescriptorType::STORAGE_IMAGE));
+        writes.push(self::create_write(descriptor_sets[0], DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING, &denoise_0,  vk::DescriptorType::STORAGE_IMAGE));
 
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[0])
-                .dst_binding(DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&output_info)),
+        // --- SET 1: Ping-Pong A (Denoise 0 -> Denoise 1) ---
+        writes.push(self::create_write(descriptor_sets[1], DenoiseDescriptorSetLayout::INPUT_BINDING, &denoise_0,  vk::DescriptorType::STORAGE_IMAGE));
+        writes.push(self::create_write(descriptor_sets[1], DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING, &denoise_1,  vk::DescriptorType::STORAGE_IMAGE));
 
-            // ---------------- SET 1 ----------------
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[1])
-                .dst_binding(DenoiseDescriptorSetLayout::TEMPORAL_RESULT_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&temporal_info_1)),
+        // --- SET 2: Ping-Pong B (Denoise 1 -> Denoise 0) ---
+        writes.push(self::create_write(descriptor_sets[2], DenoiseDescriptorSetLayout::INPUT_BINDING, &denoise_1,  vk::DescriptorType::STORAGE_IMAGE));
+        writes.push(self::create_write(descriptor_sets[2], DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING, &denoise_0,  vk::DescriptorType::STORAGE_IMAGE));
 
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[1])
-                .dst_binding(DenoiseDescriptorSetLayout::DEPTH_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&depth_info)),
-
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[1])
-                .dst_binding(DenoiseDescriptorSetLayout::NORMAL_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&normal_info)),
-
-            vk::WriteDescriptorSet::default()
-                .dst_set(descriptor_sets[1])
-                .dst_binding(DenoiseDescriptorSetLayout::FINAL_OUTPUT_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(std::slice::from_ref(&output_info)),
-        ];
+        // Add Depth and Normal to all sets
+        for &set in &descriptor_sets {
+            writes.push(self::create_write(set, DenoiseDescriptorSetLayout::DEPTH_BINDING, &depth_info, vk::DescriptorType::COMBINED_IMAGE_SAMPLER));
+            writes.push(self::create_write(set, DenoiseDescriptorSetLayout::NORMAL_BINDING, &normal_info,  vk::DescriptorType::COMBINED_IMAGE_SAMPLER));
+        }
 
         unsafe { device.update_descriptor_sets(&writes, &[]) };
 
@@ -195,6 +176,15 @@ impl DenoiseDescriptorSets {
     pub fn inner(&self) -> &[vk::DescriptorSet] {
         &self.descriptor_sets
     }
+}
+
+// Helper function to keep the code clean
+fn create_write<'a>(set: vk::DescriptorSet, binding: u32, info: &'a vk::DescriptorImageInfo, d_type: vk::DescriptorType) -> vk::WriteDescriptorSet<'a> {
+    vk::WriteDescriptorSet::default()
+        .dst_set(set)
+        .dst_binding(binding)
+        .descriptor_type(d_type)
+        .image_info(std::slice::from_ref(info))
 }
 
 impl Drop for DenoiseDescriptorSets {

@@ -2,8 +2,12 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
+layout(push_constant) uniform PushConstants {
+    float exposure;
+} pc;
+
 layout(set = 0, binding = 0, r11f_g11f_b10f) uniform readonly image2D input_image;
-layout(set = 0, binding = 1, rgba32f) uniform writeonly image2D output_image;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D output_image;
 
 // ACES Fitted (Narkowicz approximation)
 vec3 ACESFilm(vec3 x) {
@@ -31,6 +35,8 @@ void main() {
     if (any(isnan(color)) || any(isinf(color))) {
         color = vec3(0.0);
     }
+
+    color *= pc.exposure;
 
     vec3 mapped = ACESFilm(color);
 

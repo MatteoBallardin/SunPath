@@ -7,8 +7,8 @@
 
 layout(set = 0, binding = 1, r11f_g11f_b10f) uniform image2D raw_color_image; // This used to be your final output
 
-layout(set = 0, binding = 5, r32f) uniform image2D depth_image;
-layout(set = 0, binding = 6, rgba16f) uniform image2D normal_image;
+layout(set = 0, binding = 5, r16f) uniform image2D depth_image;
+layout(set = 0, binding = 6, rgba8_snorm) uniform image2D normal_image;
 layout(set = 0, binding = 7, rg16f) uniform image2D motion_vector_image;
 
 layout(location = 0) rayPayloadEXT ray_payload_t prd;
@@ -47,7 +47,6 @@ void main() {
         vec2 d = inUV * 2.0 - 1.0;
         d.y = -d.y;
 
-
         vec4 origin    = matrices_uniform_buffer.view_inverse * vec4(0, 0, 0, 1);
         vec4 target    = matrices_uniform_buffer.proj_inverse * vec4(d.x, d.y, 1, 1);
         vec4 direction = matrices_uniform_buffer.view_inverse * vec4(normalize(target.xyz), 0);
@@ -61,68 +60,62 @@ void main() {
         for (int bounce = 0; bounce < 5; bounce++) {
             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, rayOrigin, 0.001, rayDir, 10000.0, 0);
 
-            // one time calculation of g-buffer values (depth, normal)
-            if (bounce == 0) {
+            bool is_sky = (prd.dist < 0.0);
 
-                float depth_value;
-                vec3 normal_value;
-                vec2 motion_value;
-                vec2 test;
-
-                if (prd.type == 1) { // Hit sky
-                    depth_value = 100000.0; // Infinite distance
-                    normal_value = vec3(0.0,0.0,0.0);
-                    motion_value = vec2(0.0, 0.0);
-                } else {
-                    depth_value = prd.dist;
-                    normal_value = prd.normal;
-                    vec3 world_pos = rayOrigin + rayDir * prd.dist;
-                    vec4 prev_clip = prev_view_proj * vec4(world_pos, 1.0);
-
-                    vec2 prev_ndc = prev_clip.xy / prev_clip.w;
-                    vec2 prev_uv = vec2(prev_ndc.x, -prev_ndc.y) * 0.5 + 0.5;
-
-                    motion_value = inUV - prev_uv;
-                    test = prev_uv;
+            // SKY HANDLING
+            if (is_sky) {
+                if (bounce == 0) {
+                    imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(100000.0, 0.0, 0.0, 0.0));
+                    imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(0.0));
+                    imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(0.0));
                 }
-                imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(normal_value, 0.0));
-                imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(depth_value, 0.0, 0.0, 0.0));
-                imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(motion_value, 0.0, 0.0));
-            }
-
-            //Hit sky
-            if (prd.type == 1) {
                 radiance += vec3(0.05, 0.05, 0.1) * throughput; // Ambient Sky Color
                 break;
             }
 
-            //Hit Object
-            vec3 hitPos = rayOrigin + rayDir * prd.dist;
+            // UNPACK ATTRIBUTES
+            vec3 hit_normal = unpack_normal(prd.normal_packed);
+            vec3 hit_albedo = unpackUnorm4x8(prd.albedo_packed).rgb;
 
-            float brightness = max(prd.emission.r, max(prd.emission.g, prd.emission.b));
+            // G-BUFFER CALCULATION
+            if (bounce == 0) {
+                imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.dist, 0.0, 0.0, 0.0));
+                imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_normal, 0.0));
+
+                vec3 world_pos = rayOrigin + rayDir * prd.dist;
+                vec4 prev_clip = prev_view_proj * vec4(world_pos, 1.0);
+                vec2 prev_ndc = prev_clip.xy / prev_clip.w;
+                vec2 prev_uv = vec2(prev_ndc.x, -prev_ndc.y) * 0.5 + 0.5;
+
+                imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(inUV - prev_uv, 0.0, 0.0));
+            }
+
+            // 4. EMISSIVE BREAK
             radiance += prd.emission * throughput;
-
+            float brightness = max(prd.emission.r, max(prd.emission.g, prd.emission.b));
             if (brightness > 1.0) {
                 break;
             }
 
-            throughput *= prd.albedo;
+            // MATERIAL ABSORPTION & EARLY TERMINATION
+            throughput *= hit_albedo;
 
-            if (bounce > 2) {
-                float p = max(throughput.r, max(throughput.g, throughput.b));
-
-                if (rnd() > p) break;
-
-                if (p > 0.001) {
-                    throughput /= p;
-                } else {
-                    break;
-                }
+            float p = max(throughput.r, max(throughput.g, throughput.b));
+            // If the material absorbed almost all light (e.g. black surface), kill the ray
+            if (p < 0.001) {
+                break;
             }
 
-            //bounce
-            rayDir    = get_random_bounce(prd.normal);
-            rayOrigin = hitPos + prd.normal * 0.001;
+            //RUSSIAN ROULETTE
+            if (bounce > 2) {
+                if (rnd() > p) break;
+                throughput /= p;
+            }
+
+            // SETUP NEXT BOUNCE (Deferred math)
+            vec3 hitPos = rayOrigin + rayDir * prd.dist;
+            rayDir    = get_random_bounce(hit_normal);
+            rayOrigin = hitPos + hit_normal * 0.001;
         }
 
         total_radiance += radiance;

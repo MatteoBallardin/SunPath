@@ -5,7 +5,6 @@
 layout(location = 0) rayPayloadInEXT ray_payload_t payload;
 
 void main() {
-    payload.type = 1; // 1 = Miss/Sky
-    payload.albedo = vec3(0.0);
-    payload.emission = vec3(0.0);
+    payload.dist = -1.0;
+    payload.emission = vec3(0.05, 0.05, 0.1);
 }

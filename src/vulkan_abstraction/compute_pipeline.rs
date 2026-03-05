@@ -64,7 +64,9 @@ pub struct TemporalAccumulationPushConstant {
 #[allow(dead_code)] // read by the gpu
 #[repr(C, packed)]
 #[derive(Debug)]
-pub struct PostprocessPushConstant;
+pub struct PostprocessPushConstant{
+    pub exposure: f32,
+}
 
 pub struct ComputePipeline<T: ComputeTypeDef> {
     core: Rc<Core>,

@@ -8,9 +8,9 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(set = 0, binding = 0, r11f_g11f_b10f) uniform readonly image2D temporal_result; // Input
-layout(set = 0, binding = 1, r32f)    uniform readonly image2D depth_image;     // [cite: 59]
-layout(set = 0, binding = 2, rgba16f) uniform readonly image2D normal_image;    // [cite: 60]
-layout(set = 0, binding = 3, r11f_g11f_b10f) uniform writeonly image2D spatial_output;  // [cite: 61]
+layout(set = 0, binding = 1) uniform sampler2D depth_image;
+layout(set = 0, binding = 2) uniform sampler2D normal_image;
+layout(set = 0, binding = 3, r11f_g11f_b10f) uniform writeonly image2D spatial_output;
 
 float get_luminance(vec3 color) {
     return dot(color, vec3(0.2126, 0.7152, 0.0722)); // [cite: 62]
@@ -25,8 +25,8 @@ void main() {
     if (pixel_coords.x >= size.x || pixel_coords.y >= size.y) return;
 
     vec3 center_color = imageLoad(temporal_result, pixel_coords).rgb;
-    float center_depth = imageLoad(depth_image, pixel_coords).r;
-    vec3 center_normal = imageLoad(normal_image, pixel_coords).rgb;
+    float center_depth = texelFetch(depth_image, pixel_coords, 0).r;
+    vec3 center_normal = texelFetch(normal_image, pixel_coords, 0).rgb;
 
     //imageStore(spatial_output, pixel_coords, vec4(center_color, 1.0));
     //return;
@@ -39,35 +39,36 @@ void main() {
     vec3 sum_color = vec3(0.0);
     float sum_weight = 0.0; // [cite: 69]
 
-    float DEPTH_SENSITIVITY = 1.0;
-    float NORMAL_SENSITIVITY = 64.0;
-    float LUMA_SENSITIVITY = 2.0;
-    float MAX_LUMINANCE = 10.0; // [cite: 70]
+    float DEPTH_SENSITIVITY = 4;
+    float NORMAL_SENSITIVITY = 80.0; // Tighter angle rejection
 
     float center_luma = get_luminance(center_color);
 
     for (int y = -2; y <= 2; ++y) {
         for (int x = -2; x <= 2; ++x) {
-            // Apply step_width to create the "holes" in the filter
             ivec2 sample_offset = ivec2(x, y) * pc.step_width;
             ivec2 sample_coord = clamp(pixel_coords + sample_offset, ivec2(0), size - 1);
 
+            if (sample_coord.x < 0 || sample_coord.y < 0 ||
+            sample_coord.x >= size.x || sample_coord.y >= size.y) {
+                continue;
+            }
+
             vec3 sample_color = imageLoad(temporal_result, sample_coord).rgb;
-            float sample_depth = imageLoad(depth_image, sample_coord).r;
-            vec3 sample_normal = imageLoad(normal_image, sample_coord).rgb;
+            float sample_depth = texelFetch(depth_image, sample_coord, 0).r;
+            vec3 sample_normal = texelFetch(normal_image, sample_coord, 0).rgb;
 
             float sample_luma = get_luminance(sample_color);
-            if (sample_luma > MAX_LUMINANCE) {
-                sample_color *= (MAX_LUMINANCE / sample_luma);
-                sample_luma = MAX_LUMINANCE;
-            }
 
             // Edge-stopping weights
             float w_depth = exp(-abs(center_depth - sample_depth) * DEPTH_SENSITIVITY);
-            float w_normal = pow(max(0.0, dot(center_normal, sample_normal)), NORMAL_SENSITIVITY);
-            float w_luma = exp(-abs(center_luma - sample_luma) * LUMA_SENSITIVITY);
+            float w_normal = exp((dot(center_normal, sample_normal) - 1.0) * NORMAL_SENSITIVITY);
 
-            // Combine edge-stopping with the B-Spline kernel weight
+            float luma_diff = abs(center_luma - sample_luma);
+            float luma_sigma = max(center_luma, sample_luma) * 0.4 + 0.01;
+            float w_luma = exp(-luma_diff / luma_sigma);
+
+            // Combine
             float weight = w_depth * w_normal * w_luma * kernel[x + 2] * kernel[y + 2];
 
             sum_color += sample_color * weight;

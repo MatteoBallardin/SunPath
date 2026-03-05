@@ -6,7 +6,7 @@ layout(push_constant) uniform PushConstants {
     uint frame_count;
 } pc;
 
-layout(set = 0, binding = 0, r11f_g11f_b10f) uniform readonly image2D raw_rt_color;
+layout(set = 0, binding = 0) uniform sampler2D raw_rt_color;
 layout(set = 0, binding = 1, rg16f)   uniform readonly image2D motion_vector_image;
 layout(set = 0, binding = 2, r11f_g11f_b10f) uniform image2D accumulation_images[2];
 layout(set = 0, binding = 3)          uniform sampler2D history_samplers[2];
@@ -17,6 +17,10 @@ const float COLOR_THRESHOLD = 0.2;
 vec3 get_historical_color(uint history_idx, vec2 uv, vec3 current_color) {
     if (pc.frame_count == 0) return current_color;
     return texture(history_samplers[history_idx], uv).rgb;
+}
+
+float get_luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
 
 vec3 perform_temporal_accumulation(vec3 current_color, sampler2D history_sampler, vec2 uv, vec2 motion_vector, uint frame_count) {
@@ -44,20 +48,25 @@ void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coords.x >= size.x || pixel_coords.y >= size.y) return;
 
-    vec3 current_color = imageLoad(raw_rt_color, pixel_coords).rgb;
+    vec3 current_color = texelFetch(raw_rt_color, pixel_coords, 0).rgb;
     vec2 uv = (vec2(pixel_coords) + 0.5) / vec2(size);
 
     // We look at the 3x3 area around the current pixel to see what colors are "legal"
     vec3 min_color = current_color;
     vec3 max_color = current_color;
+    float center_luma = get_luminance(current_color);
 
     for (int y = -1; y <= 1; y++) {
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             ivec2 neighbor_coords = clamp(pixel_coords + ivec2(x, y), ivec2(0), size - 1);
-            vec3 neighbor_color = imageLoad(raw_rt_color, neighbor_coords).rgb;
-            min_color = min(min_color, neighbor_color);
-            max_color = max(max_color, neighbor_color);
+            vec3 neighbor_color = texelFetch(raw_rt_color, neighbor_coords, 0).rgb;
+
+            float neighbor_luma = get_luminance(neighbor_color);
+            if (abs(neighbor_luma - center_luma) < max(center_luma * 5.0, 0.5)) {
+                min_color = min(min_color, neighbor_color);
+                max_color = max(max_color, neighbor_color);
+            }
         }
     }
     vec2 motion_vector = imageLoad(motion_vector_image, pixel_coords).rg;
