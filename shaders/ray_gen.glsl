@@ -7,7 +7,7 @@
 
 layout(set = 0, binding = 1, r11f_g11f_b10f) uniform image2D raw_color_image; // This used to be your final output
 
-layout(set = 0, binding = 5, r32f) uniform image2D depth_image;
+layout(set = 0, binding = 5, r16f) uniform image2D depth_image;
 layout(set = 0, binding = 6, rgba8_snorm) uniform image2D normal_image;
 layout(set = 0, binding = 7, rg16f) uniform image2D motion_vector_image;
 
@@ -47,7 +47,6 @@ void main() {
         vec2 d = inUV * 2.0 - 1.0;
         d.y = -d.y;
 
-
         vec4 origin    = matrices_uniform_buffer.view_inverse * vec4(0, 0, 0, 1);
         vec4 target    = matrices_uniform_buffer.proj_inverse * vec4(d.x, d.y, 1, 1);
         vec4 direction = matrices_uniform_buffer.view_inverse * vec4(normalize(target.xyz), 0);
@@ -61,6 +60,16 @@ void main() {
         for (int bounce = 0; bounce < 5; bounce++) {
             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, rayOrigin, 0.001, rayDir, 10000.0, 0);
 
+            // Unpack attributes for lighting if we didn't hit the sky
+            vec3 hit_normal = vec3(0.0);
+            vec3 hit_albedo = vec3(0.0);
+            bool is_sky = (prd.dist < 0.0); // Check sentinel instead of prd.type
+
+            if (!is_sky) {
+                hit_normal = unpack_normal(prd.normal_packed);
+                hit_albedo = unpackUnorm4x8(prd.albedo_packed).rgb;
+            }
+
             // one time calculation of g-buffer values (depth, normal)
             if (bounce == 0) {
 
@@ -69,13 +78,13 @@ void main() {
                 vec2 motion_value;
                 vec2 test;
 
-                if (prd.type == 1) { // Hit sky
+                if (is_sky) { // Hit sky
                     depth_value = 100000.0; // Infinite distance
                     normal_value = vec3(0.0,0.0,0.0);
                     motion_value = vec2(0.0, 0.0);
                 } else {
                     depth_value = prd.dist;
-                    normal_value = prd.normal;
+                    normal_value = hit_normal; // Use unpacked normal
                     vec3 world_pos = rayOrigin + rayDir * prd.dist;
                     vec4 prev_clip = prev_view_proj * vec4(world_pos, 1.0);
 
@@ -91,7 +100,7 @@ void main() {
             }
 
             //Hit sky
-            if (prd.type == 1) {
+            if (is_sky) {
                 radiance += vec3(0.05, 0.05, 0.1) * throughput; // Ambient Sky Color
                 break;
             }
@@ -106,7 +115,7 @@ void main() {
                 break;
             }
 
-            throughput *= prd.albedo;
+            throughput *= hit_albedo; // Use unpacked albedo
 
             if (bounce > 2) {
                 float p = max(throughput.r, max(throughput.g, throughput.b));
@@ -121,8 +130,8 @@ void main() {
             }
 
             //bounce
-            rayDir    = get_random_bounce(prd.normal);
-            rayOrigin = hitPos + prd.normal * 0.001;
+            rayDir    = get_random_bounce(hit_normal); // Use unpacked normal
+            rayOrigin = hitPos + hit_normal * 0.001;   // Use unpacked normal
         }
 
         total_radiance += radiance;

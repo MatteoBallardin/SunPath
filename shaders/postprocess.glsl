@@ -3,7 +3,7 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, r11f_g11f_b10f) uniform readonly image2D input_image;
-layout(set = 0, binding = 1, rgba32f) uniform writeonly image2D output_image;
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D output_image;
 
 // ACES Fitted (Narkowicz approximation)
 vec3 ACESFilm(vec3 x) {

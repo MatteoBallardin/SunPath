@@ -16,7 +16,20 @@ vec4 sample_texture(in uint texture_index, in vec2 tex_coords, in vec4 fallback_
     }
 }
 
+// Octahedral Normal Packing (3D -> 2D -> uint)
+uint pack_normal(vec3 n) {
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    vec2 v = (n.z >= 0.0) ? n.xy : (1.0 - abs(n.yx)) * sign(n.xy);
+    return packSnorm2x16(v * 0.5 + 0.5);
+}
 
+vec3 unpack_normal(uint p) {
+    vec2 v = unpackSnorm2x16(p) * 2.0 - 1.0;
+    vec3 n = vec3(v, 1.0 - abs(v.x) - abs(v.y));
+    float t = max(-n.z, 0.0);
+    n.xy += mix(vec2(t), vec2(-t), greaterThanEqual(n.xy, vec2(0.0)));
+    return normalize(n);
+}
 
 //given 3 vertices, a texture coordinate attribute and barycentric coordinates interpolate the texture coordinate attribute
 #define INTERPOLATE_VERTEX_ATTRIBUTE(attribute, triangle, barycentrics) \

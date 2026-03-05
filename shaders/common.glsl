@@ -6,11 +6,12 @@
 #extension GL_EXT_shader_explicit_arithmetic_types : require // uint32_t
 
 struct ray_payload_t {
-    vec3 albedo;    // Surface color
-    vec3 normal;    // Surface normal
-    vec3 emission;  // If the object is a light source
-    float dist;     // Distance to hit (t)
-    int  type;      // 0 = Hit Object, 1 = Miss/Sky
+    vec3 emission;      // 12 bytes - HDR for precision
+    float dist;         // 4 bytes  - used for G-buffer and hit/miss sentinel
+    uint albedo_packed; // 4 bytes  - packed RGB
+    uint normal_packed; // 4 bytes  - octahedral packed normal
+    uint material_info; // 4 bytes  - room for roughness (16-bit) + metalness (16-bit)
+    uint _pad;          // 4 bytes  - EXTRA: room for Material ID or future features
 };
 
 struct vertex_attributes_t {

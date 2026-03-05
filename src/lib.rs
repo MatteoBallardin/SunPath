@@ -385,7 +385,7 @@ impl Renderer {
             let postprocess_result_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
-                vk::Format::R32G32B32A32_SFLOAT,
+                vk::Format::R8G8B8A8_UNORM,
                 vk::ImageTiling::OPTIMAL,
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
@@ -395,7 +395,7 @@ impl Renderer {
             let depth_image = vulkan_abstraction::Image::new(
                 Rc::clone(&self.core),
                 self.image_extent,
-                vk::Format::R32_SFLOAT, // r32f in GLSL
+                vk::Format::R16_SFLOAT,
                 vk::ImageTiling::OPTIMAL,
                 gpu_allocator::MemoryLocation::GpuOnly,
                 vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,

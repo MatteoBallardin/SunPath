@@ -51,9 +51,8 @@ void main() {
     vec3 world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
 
     // payload
-    payload.albedo   = base_color.rgb;
-    payload.normal   = world_normal;
+    payload.dist = gl_HitTEXT;
     payload.emission = final_emission;
-    payload.dist     = gl_HitTEXT;
-    payload.type     = 0; // 0 = Hit Object
+    payload.albedo_packed = packUnorm4x8(vec4(base_color.rgb, 1.0));
+    payload.normal_packed = pack_normal(world_normal);
 }
