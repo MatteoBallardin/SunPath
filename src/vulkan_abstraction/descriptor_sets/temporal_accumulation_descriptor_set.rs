@@ -25,7 +25,7 @@ impl TemporalAccumulationDescriptorSetLayout {
             // 0: Current Noisy Frame (Storage)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(Self::RAW_COLOR_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
 
@@ -102,10 +102,10 @@ impl TemporalAccumulationDescriptorSets {
         let pool_sizes = [
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(4), // 1 Input + 1 Motion + 2 Accumulation
+                .descriptor_count(3), // 1 Motion + 2 Accumulation
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2), // 2 History
+                .descriptor_count(3), // 1 Input + 2 History
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo::default()
@@ -131,7 +131,13 @@ impl TemporalAccumulationDescriptorSets {
         };
 
         // 3. Create Image Infos
-        let input_info = create_info(input_image);
+        let input_info =
+            {
+                vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(input_image.image_view())
+                    .sampler(history_sampler)
+            };
         let mv_info = create_info(motion_vector_image);
 
         let accumulation_infos = [
@@ -155,7 +161,7 @@ impl TemporalAccumulationDescriptorSets {
             vk::WriteDescriptorSet::default()
                 .dst_set(set)
                 .dst_binding(TemporalAccumulationDescriptorSetLayout::RAW_COLOR_BINDING)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(std::slice::from_ref(&input_info)),
 
             vk::WriteDescriptorSet::default()

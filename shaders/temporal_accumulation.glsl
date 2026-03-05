@@ -6,7 +6,7 @@ layout(push_constant) uniform PushConstants {
     uint frame_count;
 } pc;
 
-layout(set = 0, binding = 0, r11f_g11f_b10f) uniform readonly image2D raw_rt_color;
+layout(set = 0, binding = 0) uniform sampler2D raw_rt_color;
 layout(set = 0, binding = 1, rg16f)   uniform readonly image2D motion_vector_image;
 layout(set = 0, binding = 2, r11f_g11f_b10f) uniform image2D accumulation_images[2];
 layout(set = 0, binding = 3)          uniform sampler2D history_samplers[2];
@@ -44,7 +44,7 @@ void main() {
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coords.x >= size.x || pixel_coords.y >= size.y) return;
 
-    vec3 current_color = imageLoad(raw_rt_color, pixel_coords).rgb;
+    vec3 current_color = texelFetch(raw_rt_color, pixel_coords, 0).rgb;
     vec2 uv = (vec2(pixel_coords) + 0.5) / vec2(size);
 
     // We look at the 3x3 area around the current pixel to see what colors are "legal"
@@ -55,7 +55,7 @@ void main() {
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             ivec2 neighbor_coords = clamp(pixel_coords + ivec2(x, y), ivec2(0), size - 1);
-            vec3 neighbor_color = imageLoad(raw_rt_color, neighbor_coords).rgb;
+            vec3 neighbor_color = texelFetch(raw_rt_color, neighbor_coords, 0).rgb;
             min_color = min(min_color, neighbor_color);
             max_color = max(max_color, neighbor_color);
         }

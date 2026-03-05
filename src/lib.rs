@@ -366,7 +366,7 @@ impl Renderer {
                 vk::Format::B10G11R11_UFLOAT_PACK32,
                 vk::ImageTiling::OPTIMAL,
                 gpu_allocator::MemoryLocation::GpuOnly,
-                vk::ImageUsageFlags::STORAGE,
+                vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
                 "sunray (preprocess) raytrace result image",
             )?;
 
@@ -771,6 +771,13 @@ impl Renderer {
                     .new_layout(vk::ImageLayout::GENERAL)
                     .image(img_dependent_data.normal_image.inner())
                     .subresource_range(*img_dependent_data.normal_image.image_subresource_range()),
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_READ)
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(img_dependent_data.raytrace_result_image.inner())
+                    .subresource_range(*img_dependent_data.raytrace_result_image.image_subresource_range()),
             ];
 
             device.cmd_pipeline_barrier(
@@ -1001,7 +1008,7 @@ impl Renderer {
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
             .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image(raw_rt_image)
             .subresource_range(vk::ImageSubresourceRange { aspect_mask: vk::ImageAspectFlags::COLOR, base_mip_level: 0, level_count: 1, base_array_layer: 0, layer_count: 1 });
 
