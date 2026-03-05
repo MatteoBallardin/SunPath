@@ -17,7 +17,9 @@ use crate::vulkan_abstraction::{DenoiseDescriptorSetLayout, DenoisePass, PostPro
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 
-pub const DENOISE_PASSES: u32 = 5;
+pub const DENOISE_PASSES: u32 = 7;
+
+pub const EXPOSURE: f32 = 1.0;
 
 struct ImageDependentData {
     pub raytracing_cmd_buf: vulkan_abstraction::CmdBuffer,
@@ -219,9 +221,9 @@ impl Renderer {
             Rc::clone(&core),
             vk::Filter::LINEAR,
             vk::Filter::LINEAR,
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerAddressMode::REPEAT,
-            vk::SamplerAddressMode::REPEAT,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
             vk::SamplerMipmapMode::LINEAR,
         )?;
 
@@ -1224,6 +1226,10 @@ impl Renderer {
     ) -> SrResult<()> {
         let device = self.core.device().inner();
 
+        let push_constants = vulkan_abstraction::PostprocessPushConstant {
+            exposure: EXPOSURE
+        };
+
         // 1. Synchronize: Wait for Denoise (Compute) to finish writing to input_image
         let input_barrier = vk::ImageMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -1278,6 +1284,17 @@ impl Renderer {
                 0,
                 &[descriptor_sets.inner()[final_denoise_idx]],
                 &[],
+            );
+
+            device.cmd_push_constants(
+                cmd_buf,
+                self.denoise_pipeline.layout(),
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                &std::mem::transmute::<
+                    vulkan_abstraction::PostprocessPushConstant,
+                    [u8; std::mem::size_of::<vulkan_abstraction::PostprocessPushConstant>()],
+                >(push_constants),
             );
 
             // Dispatch post-process shader

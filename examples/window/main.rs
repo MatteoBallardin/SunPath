@@ -68,7 +68,7 @@ impl App {
         let (mut renderer, surface) =
             sunray::Renderer::new_with_surface(size, vk::Format::R8G8B8A8_SRGB, instance_exts, &create_surface)?;
 
-        renderer.load_gltf("examples/assets/Room2.glb")?;
+        renderer.load_gltf("examples/assets/heavy_models/Room3.glb")?;
 
         //take ownership of the surface
         let surface = surface::Surface::new(renderer.core().entry(), renderer.core().instance(), surface);
@@ -270,8 +270,8 @@ impl App {
 
 
         let camera = Camera::default()
-            .set_position(na::Point3::new(0.0, y, dist))
-            //.set_position(na::Point3::new(0.0, y + (time * 2.0).cos() * 2.0, dist))
+            //.set_position(na::Point3::new(0.0, y, dist))
+            .set_position(na::Point3::new((time * 0.5).sin() * 4.0, y + (time * 2.0).cos() * 2.0, dist -  (time * 0.6).cos() * 4.0))
             //.set_position(na::Point3::new(dist * time.cos(), y, dist * time.sin()))
             .set_target(na::Point3::new(0.0, y, 0.0))
             .set_fov_y(45.0);

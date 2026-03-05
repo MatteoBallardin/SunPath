@@ -19,6 +19,10 @@ vec3 get_historical_color(uint history_idx, vec2 uv, vec3 current_color) {
     return texture(history_samplers[history_idx], uv).rgb;
 }
 
+float get_luminance(vec3 color) {
+    return dot(color, vec3(0.2126, 0.7152, 0.0722));
+}
+
 vec3 perform_temporal_accumulation(vec3 current_color, sampler2D history_sampler, vec2 uv, vec2 motion_vector, uint frame_count) {
     vec2 prev_uv = uv - motion_vector;
     bool is_off_screen = any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0)));
@@ -50,14 +54,19 @@ void main() {
     // We look at the 3x3 area around the current pixel to see what colors are "legal"
     vec3 min_color = current_color;
     vec3 max_color = current_color;
+    float center_luma = get_luminance(current_color);
 
     for (int y = -1; y <= 1; y++) {
         for (int x = -1; x <= 1; x++) {
             if (x == 0 && y == 0) continue;
             ivec2 neighbor_coords = clamp(pixel_coords + ivec2(x, y), ivec2(0), size - 1);
             vec3 neighbor_color = texelFetch(raw_rt_color, neighbor_coords, 0).rgb;
-            min_color = min(min_color, neighbor_color);
-            max_color = max(max_color, neighbor_color);
+
+            float neighbor_luma = get_luminance(neighbor_color);
+            if (abs(neighbor_luma - center_luma) < max(center_luma * 5.0, 0.5)) {
+                min_color = min(min_color, neighbor_color);
+                max_color = max(max_color, neighbor_color);
+            }
         }
     }
     vec2 motion_vector = imageLoad(motion_vector_image, pixel_coords).rg;

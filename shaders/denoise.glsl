@@ -39,7 +39,7 @@ void main() {
     vec3 sum_color = vec3(0.0);
     float sum_weight = 0.0; // [cite: 69]
 
-    float DEPTH_SENSITIVITY = 1;
+    float DEPTH_SENSITIVITY = 4;
     float NORMAL_SENSITIVITY = 80.0; // Tighter angle rejection
 
     float center_luma = get_luminance(center_color);
@@ -48,6 +48,11 @@ void main() {
         for (int x = -2; x <= 2; ++x) {
             ivec2 sample_offset = ivec2(x, y) * pc.step_width;
             ivec2 sample_coord = clamp(pixel_coords + sample_offset, ivec2(0), size - 1);
+
+            if (sample_coord.x < 0 || sample_coord.y < 0 ||
+            sample_coord.x >= size.x || sample_coord.y >= size.y) {
+                continue;
+            }
 
             vec3 sample_color = imageLoad(temporal_result, sample_coord).rgb;
             float sample_depth = texelFetch(depth_image, sample_coord, 0).r;
