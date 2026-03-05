@@ -482,8 +482,6 @@ impl Renderer {
                         create_barrier(depth_image.inner()),
                         create_barrier(normal_image.inner()),
                         create_barrier(motion_vector_image.inner()),
-                        create_barrier(spatial_image_1.inner()),
-                        create_barrier(spatial_image_2.inner()),
                     ];
 
 
@@ -544,7 +542,7 @@ impl Renderer {
                 &self.denoising_images,
                 &depth_image,
                 &normal_image,
-                &denoise_result_image,
+                &self.denoising_images,
             )?;
 
             let postprocess_descriptor_sets = vulkan_abstraction::PostProcessDescriptorSets::new(
@@ -571,10 +569,10 @@ impl Renderer {
                 Self::cmd_blit_image(
                     &self.core,
                     blit_cmd_buf.inner(),
-                    postprocess_result_image.inner(),
-                    postprocess_result_image.extent(),
+                    raytrace_result_image.inner(),
+                    raytrace_result_image.extent(),
                     *post_blit_image,
-                    postprocess_result_image.image_subresource_range(),
+                    raytrace_result_image.image_subresource_range(),
                 )?;
 
                 unsafe { self.core.device().inner().end_command_buffer(blit_cmd_buf.inner()) }?;
@@ -727,102 +725,15 @@ impl Renderer {
                 &self.accumulation_images,
             )?;
 
-            let accum_idx = (self.frame_count % 2) as usize; // Current written image
-            let src_accum = self.accumulation_images[accum_idx].inner();
-            let dst_denoise = self.denoising_images[0].inner();
-
-            // Barrier: Transition layouts for Copy
-            let copy_barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .image(src_accum)
-                    .subresource_range(*self.accumulation_images[accum_idx].image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::empty())
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .image(dst_denoise)
-                    .subresource_range(*self.denoising_images[0].image_subresource_range()),
-            ];
-
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[], &[], &copy_barriers,
-            );
-
-            let copy_region = vk::ImageCopy::default()
-                .src_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
-                .dst_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
-                .extent(result_extent);
-
-            device.cmd_copy_image(
-                cmd_buf,
-                src_accum,
-                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                dst_denoise,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[copy_region],
-            );
-
-            // Barrier: Transition back to GENERAL for Compute Shaders
-            let post_copy_barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(src_accum)
-                    .subresource_range(*self.accumulation_images[accum_idx].image_subresource_range()),
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(vk::ImageLayout::GENERAL)
-                    .image(dst_denoise)
-                    .subresource_range(*self.denoising_images[0].image_subresource_range()),
-            ];
-
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[], &[], &post_copy_barriers,
-            );
-
             // 5. Denoise Ping-Pong Loop
-            for i in 0..DENOISE_PASSES {
-                let read_idx = (i % 2) as usize;
-                let write_idx = ((i + 1) % 2) as usize;
-
-                (*this_ptr).cmd_denoise_image(
-                    cmd_buf, &*denoise_descriptor_sets_ptr,
-                    result_extent.width, result_extent.height,
-                    self.denoising_images[read_idx].inner(),
-                    self.denoising_images[write_idx].inner(),
-                    i,
-                )?;
-
-                // Pass-to-pass barrier
-                let loop_barrier = vk::MemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
-
-                device.cmd_pipeline_barrier(
-                    cmd_buf,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[loop_barrier], &[], &[]
-                );
-            }
+            (*this_ptr).cmd_denoise_image(
+                cmd_buf,
+                &*denoise_descriptor_sets_ptr,
+                result_extent.width,
+                result_extent.height,
+                &self.accumulation_images,
+                &self.denoising_images
+            )?;
 
             // 6. Post-process
             // Use result of the last denoise pass
@@ -835,7 +746,8 @@ impl Renderer {
                 &*postprocess_descriptor_sets_ptr,
                 result_extent.width,
                 result_extent.height,
-                self.denoising_images[(DENOISE_PASSES % 2) as usize].inner(),
+                //result_image,
+                self.denoising_images[0].inner(),
                 postprocessed_image,
             )?;
 
@@ -1139,120 +1051,121 @@ impl Renderer {
         descriptor_sets: &vulkan_abstraction::DenoiseDescriptorSets,
         width: u32,
         height: u32,
-        input_image:  vk::Image,
-        output_image:  vk::Image,
-        step_width: u32,
+        input_images:  &[vulkan_abstraction::Image; 2],                //used in the first pass (getting from TAA to denoise)
+        denoise_pingpong_images:  &[vulkan_abstraction::Image; 2],
     ) -> SrResult<()> {
         let device = self.core.device().inner();
+        let total_passes = 4; // Or use a member/constant like self.denoise_passes
 
-        let input_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // RT wrote to it
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)  // Denoise reads it
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(input_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+        // Determine which accumulation image is the "latest" history to read from
+        let history_idx = (self.frame_count % 2) as usize;
 
-        // Ensure the output image is ready to be written to
-        let output_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::empty())      // Don't care what it was before
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE) // Denoise writes to it
-            .old_layout(vk::ImageLayout::UNDEFINED)         // Discard previous content
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(output_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
+        for pass_index in 0..total_passes {
+            // Step width follows a-trous wavelet pattern: 1, 2, 4, 8...
+            let step_width = 1 << pass_index;
 
-        let push_constants = vulkan_abstraction::DenoisePushConstant {
-            frame_count: self.frame_count,
-            step_width,
-        };
+            // Logic for choosing images and descriptors:
+            // Pass 0: Read Input[hist] -> Write Denoise[0] (Set 0)
+            // Pass 1: Read Denoise[0] -> Write Denoise[1] (Set 1)
+            // Pass 2: Read Denoise[1] -> Write Denoise[0] (Set 2)
+            // Pass 3: Read Denoise[0] -> Write Denoise[1] (Set 1)
+            let (read_img, write_img, descriptor_idx) = if pass_index == 0 {
+                (
+                    input_images[history_idx].inner(),
+                    denoise_pingpong_images[0].inner(),
+                    0 // Set 0: Input -> Denoise 0
+                )
+            } else if pass_index % 2 == 1 {
+                (
+                    denoise_pingpong_images[0].inner(),
+                    denoise_pingpong_images[1].inner(),
+                    1 // Set 1: Denoise 0 -> Denoise 1
+                )
+            } else {
+                (
+                    denoise_pingpong_images[1].inner(),
+                    denoise_pingpong_images[0].inner(),
+                    2 // Set 2: Denoise 1 -> Denoise 0
+                )
+            };
 
-        unsafe{
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR, // Wait for RT
-                vk::PipelineStageFlags::COMPUTE_SHADER,         // Block Compute
-                vk::DependencyFlags::empty(),
-                &[], &[],
-                &[input_barrier, output_barrier]
-            );
+            // --- BARRIERS ---
+            // Synchronize the image we are about to read (ensure previous write is done)
+            let read_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(read_img)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    level_count: 1,
+                    layer_count: 1,
+                    ..Default::default()
+                });
 
-            device.cmd_bind_pipeline(
-                cmd_buf,
-                vk::PipelineBindPoint::COMPUTE,
-                self.denoise_pipeline.inner(),
-            );
+            // Synchronize the image we are about to write to
+            let write_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::empty()) // Or SHADER_READ if it was a source in a previous pass
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(write_img)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    level_count: 1,
+                    layer_count: 1,
+                    ..Default::default()
+                });
 
-            let accum_idx = (self.frame_count + 1) % 2;
+            let push_constants = vulkan_abstraction::DenoisePushConstant {
+                frame_count: self.frame_count,
+                step_width,
+            };
 
-            device.cmd_bind_descriptor_sets(
-                cmd_buf,
-                vk::PipelineBindPoint::COMPUTE,
-                self.denoise_pipeline.layout(),
-                0,
-                &[descriptor_sets.inner()[accum_idx as usize]],
-                &[],
-            );
+            unsafe {
+                // Compute-to-Compute barrier ensures execution order and cache visibility
+                device.cmd_pipeline_barrier(
+                    cmd_buf,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[read_barrier, write_barrier],
+                );
 
-            device.cmd_push_constants(
-                cmd_buf,
-                self.denoise_pipeline.layout(),
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &std::mem::transmute::<
-                    vulkan_abstraction::DenoisePushConstant,
-                    [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()],
-                >(push_constants),
-            );
+                device.cmd_bind_pipeline(
+                    cmd_buf,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.denoise_pipeline.inner(),
+                );
+
+                device.cmd_bind_descriptor_sets(
+                    cmd_buf,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.denoise_pipeline.layout(),
+                    0,
+                    &[descriptor_sets.inner()[descriptor_idx]],
+                    &[],
+                );
+
+                device.cmd_push_constants(
+                    cmd_buf,
+                    self.denoise_pipeline.layout(),
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    &std::mem::transmute::<
+                        vulkan_abstraction::DenoisePushConstant,
+                        [u8; std::mem::size_of::<vulkan_abstraction::DenoisePushConstant>()],
+                    >(push_constants),
+                );
+
+                let group_x = (width + 15) / 16;
+                let group_y = (height + 15) / 16;
+                device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
+            }
         }
-
-
-
-
-        let group_x = (width + 15) / 16;
-        let group_y = (height + 15) / 16;
-        unsafe {
-            device.cmd_dispatch(cmd_buf, group_x, group_y, 1);
-        }
-
-
-        let post_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE) // Denoise wrote it
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ) // Blit reads it
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(output_image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            });
-
-        unsafe {
-            device.cmd_pipeline_barrier(
-                cmd_buf,
-                vk::PipelineStageFlags::COMPUTE_SHADER, // Wait for Denoise
-                vk::PipelineStageFlags::TRANSFER,       // Block Transfer (Blit)
-                vk::DependencyFlags::empty(),
-                &[], &[],
-                &[post_barrier]
-            );
-        }
-
 
         Ok(())
 
