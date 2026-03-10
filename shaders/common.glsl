@@ -11,7 +11,7 @@ struct ray_payload_t {
     uint albedo_packed; // 4 bytes  - packed RGB
     uint normal_packed; // 4 bytes  - octahedral packed normal
     uint material_info; // 4 bytes  - room for roughness (16-bit) + metalness (16-bit)
-    uint _pad;          // 4 bytes  - EXTRA: room for Material ID or future features
+    uint transmission_ior_packed;
 };
 
 struct vertex_attributes_t {
@@ -49,7 +49,13 @@ struct material_t {
 
     uint alpha_mode;
     float alpha_cutoff;
-    uint _end_padding;
+
+    float transmission_factor;
+    float ior;
+
+    uint _end_padding_0;
+    uint _end_padding_1;
+    uint _end_padding_2;
 };
 
 struct mesh_info_t {

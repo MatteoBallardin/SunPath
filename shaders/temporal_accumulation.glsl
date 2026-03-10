@@ -12,7 +12,7 @@ layout(set = 0, binding = 2, r11f_g11f_b10f) uniform image2D accumulation_images
 layout(set = 0, binding = 3)          uniform sampler2D history_samplers[2];
 
 const float ACCUMULATION_FACTOR = 0.1;
-const float COLOR_THRESHOLD = 0.2;
+const float COLOR_THRESHOLD = 0.1;
 
 vec3 get_historical_color(uint history_idx, vec2 uv, vec3 current_color) {
     if (pc.frame_count == 0) return current_color;

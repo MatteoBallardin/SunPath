@@ -38,11 +38,12 @@ void main() {
     vec4 normal_data = texelFetch(normal_image, pixel_coords, 0);
     vec3 center_normal = normal_data.rgb;
     float center_roughness = normal_data.a;
+    vec3 center_diffuse = texelFetch(diffuse_image, pixel_coords, 0).rgb;
 
     if(center_roughness < 0.1){
-        imageStore(spatial_output, pixel_coords, vec4(center_color, 1.0));
+        imageStore(spatial_output, pixel_coords, vec4(center_color * center_diffuse, 1.0));
     }
-    vec3 center_diffuse = texelFetch(diffuse_image, pixel_coords, 0).rgb;
+
 
     //imageStore(spatial_output, pixel_coords, vec4(center_color, 1.0));
     //return;
@@ -53,7 +54,7 @@ void main() {
 
 
 
-    float DEPTH_SENSITIVITY = 4;
+    float DEPTH_SENSITIVITY = 1.0;
     float NORMAL_SENSITIVITY = 80.0;
     float DIFFUSE_SENSITIVITY = 50.0;
 
@@ -99,7 +100,7 @@ void main() {
         }
     }
 
-    vec3 spatially_denoised_color = sum_color / max(sum_weight, 0.0001);
+    vec3 spatially_denoised_color = (sum_color / max(sum_weight, 0.0001)) * center_diffuse;
 
     imageStore(spatial_output, pixel_coords, vec4(spatially_denoised_color, 1.0));
 }

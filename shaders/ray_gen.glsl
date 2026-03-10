@@ -59,7 +59,11 @@ void main() {
 
     vec3 total_radiance = vec3(0.0);
     int SAMPLES = 1;
+    int BOUNCES = 10;
+    int SHADOW_BOUNCES = BOUNCES / 2;
     init_rng(gl_LaunchIDEXT.xy, frame_count);
+
+    vec3 primary_albedo = vec3(1.0);
 
     for(int i = 0; i < SAMPLES; i++){
         const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
@@ -77,7 +81,12 @@ void main() {
         vec3 throughput = vec3(1.0);
         vec3 radiance   = vec3(0.0);
 
-        for (int bounce = 0; bounce < 8; bounce++) {
+        float virtual_dist = 0.0;
+        bool gbuffer_written = false;
+
+
+
+        for (int bounce = 0; bounce < BOUNCES; bounce++) {
             traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0, rayOrigin, 0.001, rayDir, 10000.0, 0);
 
             bool is_sky = (prd.dist < 0.0);
@@ -88,7 +97,7 @@ void main() {
                     imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(0.0));
                     imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(0.0));
                 }
-                radiance += vec3(0.05, 0.05, 0.1) * throughput;
+                radiance += vec3(0.0, 0.0, 0.0) * throughput;
                 break;
             }
 
@@ -100,6 +109,12 @@ void main() {
             vec2 mat_info = unpackHalf2x16(prd.material_info);
             float roughness = max(mat_info.x, 0.01);
             float metallic = clamp(mat_info.y, 0.0, 1.0);
+
+            vec2 trans_ior = unpackHalf2x16(prd.transmission_ior_packed);
+            float transmission = trans_ior.x;
+            float ior = max(trans_ior.y, 1.0);
+
+            virtual_dist += prd.dist;
 
             if (bounce == 0) {
                 imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.dist, 0.0, 0.0, 0.0));
@@ -114,15 +129,83 @@ void main() {
                 imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(inUV - prev_uv, 0.0, 0.0));
             }
 
+            //Virtual gbuffer handling for very reflecting surfaces
+            if (!gbuffer_written) {
+                if (roughness > 0.1 || bounce == BOUNCES - 1) {
+
+                    primary_albedo = hit_albedo;
+
+                    // Write the Reflected Depth, Normal, and Diffuse!
+                    imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(virtual_dist, 0.0, 0.0, 0.0));
+                    imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_normal, roughness));
+                    imageStore(diffuse_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_albedo, 0.0));
+
+                    vec3 virtual_pos = origin.xyz + direction.xyz * virtual_dist;
+                    vec4 prev_clip = matrices_uniform_buffer.prev_view_proj * vec4(virtual_pos, 1.0);
+                    vec2 prev_ndc = prev_clip.xy / prev_clip.w;
+                    vec2 prev_uv = vec2(prev_ndc.x, -prev_ndc.y) * 0.5 + 0.5;
+
+                    imageStore(motion_vector_image, ivec2(gl_LaunchIDEXT.xy), vec4(inUV - prev_uv, 0.0, 0.0));
+
+                    gbuffer_written = true;
+                }
+            }
             radiance += prd.emission * throughput;
             float brightness = max(prd.emission.r, max(prd.emission.g, prd.emission.b));
             if (brightness > 1.0) {
                 break;
             }
 
+            if (transmission > 0.5) {
+                // A. Detect if we are entering or leaving the glass
+                bool is_inside = dot(rayDir, hit_normal) > 0.0;
+
+                //Flip the normal
+                vec3 N = is_inside ? -hit_normal : hit_normal;
+
+                // Calculate the IOR ratio (Assuming outside air is 1.0)
+                float eta = is_inside ? (ior / 1.0) : (1.0 / ior);
+
+                // D. Schlick's Approximation for Fresnel
+                float cos_theta = min(dot(-rayDir, N), 1.0);
+                float R0 = (1.0 - eta) / (1.0 + eta);
+                R0 = R0 * R0;
+                float fresnel = R0 + (1.0 - R0) * pow(1.0 - cos_theta, 5.0);
+
+                // E. Snell's Law (Bend the ray)
+                vec3 refracted = refract(rayDir, N, eta);
+
+                //Total Internal Reflection (TIR)
+                if (length(refracted) < 0.01) {
+                    fresnel = 1.0; //Angle too steep, force a perfect mirror bounce inside
+                }
+
+                // Stochastic Branching: Reflect or Refract?
+                if (rnd() < fresnel) {
+                    // Reflection
+                    rayDir = reflect(rayDir, N);
+                } else {
+                    // Refraction
+                    rayDir = refracted;
+
+                    // Beer-Lambert Law (Volumetric Absorption)
+                    if (is_inside) {
+                        // The deeper the ray travels through tinted glass, the exponentially darker it gets
+                        vec3 absorption = 1.0 - hit_albedo;
+                        throughput *= exp(-absorption * prd.dist * 5.0); //5.0 is an arbitrary density multiplier
+                    } else {
+                        // Just entering the glass, multiply by the surface tint
+                        throughput *= hit_albedo;
+                    }
+                }
+
+                rayOrigin = hitPos + rayDir * 0.001;
+                continue;
+            }
+
 
             uint num_lights = emissive_triangles.length();
-            if (num_lights > 0 && bounce < 2 && roughness > 0.2) {
+            if (num_lights > 0 && bounce < SHADOW_BOUNCES  && roughness > 0.2) {
                 // Pick a random light triangle
                 uint light_idx = min(uint(rnd() * num_lights), num_lights - 1);
                 emissive_triangle_t light = emissive_triangles[light_idx];
@@ -149,14 +232,11 @@ void main() {
 
                 if (cos_theta_light > 0.0 && cos_theta_surface > 0.0) {
                     uint ray_flags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsOpaqueEXT;
-
-                    // THE TRICK: Reset our dist to a "hit" state
                     prd.dist = 1.0;
 
-                    // Notice we changed the missIndex (arg 6) and payload (arg 11) back to 0!
                     traceRayEXT(tlas, ray_flags, 0xFF, 0, 0, 0, hitPos, 0.001, shadow_ray_dir, light_dist - 0.001, 0);
 
-                    // If it is < 0.0, ray_miss.glsl ran, meaning the light is visible!
+                    // If it is < 0.0, ray_miss.glsl ran, meaning the light is visible
                     if (prd.dist < 0.0) {
                         float light_area = light.v0_area.w;
                         float solid_angle_pdf = (light_dist * light_dist) / (cos_theta_light * light_area * float(num_lights));
@@ -176,7 +256,7 @@ void main() {
             float cos_theta = max(dot(N, V), 0.0);
             vec3 F = F0 + (1.0 - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 
-            float p_specular = clamp(max(F.r, max(F.g, F.b)), 0.05, 0.95);
+            float p_specular = clamp(max(F.r, max(F.g, F.b)), 0.05, 1.0);
 
             if (rnd() < p_specular) {
                 vec3 H = get_ggx_microfacet(N, roughness, rnd(), rnd());
@@ -211,6 +291,7 @@ void main() {
     }
 
     vec3 current_frame_color = total_radiance / float(SAMPLES);
+    vec3 raw_lighting = current_frame_color / max(primary_albedo, vec3(0.001));
 
-    imageStore(raw_color_image, ivec2(gl_LaunchIDEXT.xy), vec4(current_frame_color, 1.0));
+    imageStore(raw_color_image, ivec2(gl_LaunchIDEXT.xy), vec4(raw_lighting, 1.0));
 }
