@@ -35,7 +35,11 @@ struct Material {
 
     pub alpha_mode: u32,   // 4 bytes
     pub alpha_cutoff: f32, // 4 bytes
-    pub _end_padding: u32,
+
+    pub transmission_factor: f32,
+    pub ior: f32,
+
+    pub _end_padding: [u32; 3],
 }
 impl Material {
     const NULL_TEXTURE_INDEX: u32 = u32::MAX;
@@ -73,7 +77,9 @@ impl From<&vulkan_abstraction::gltf::Material> for Material {
 
             alpha_mode: 0,
             alpha_cutoff: 0.0,
-            _end_padding: 0,
+            transmission_factor: material.transmission_factor,
+            ior: material.ior,
+            _end_padding: [0;3],
             _padding: [0.0; 2],
         }
     }

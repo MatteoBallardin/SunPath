@@ -20,4 +20,6 @@ pub struct Material {
     pub alpha_mode: gltf::material::AlphaMode,
     pub alpha_cutoff: f32,
     pub double_sided: bool,
+    pub transmission_factor: f32,
+    pub ior: f32,
 }

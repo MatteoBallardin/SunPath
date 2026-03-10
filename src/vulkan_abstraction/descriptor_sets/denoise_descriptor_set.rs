@@ -172,7 +172,7 @@ impl DenoiseDescriptorSets {
         for &set in &descriptor_sets {
             writes.push(self::create_write(set, DenoiseDescriptorSetLayout::DEPTH_BINDING, &depth_info, vk::DescriptorType::COMBINED_IMAGE_SAMPLER));
             writes.push(self::create_write(set, DenoiseDescriptorSetLayout::NORMAL_BINDING, &normal_info,  vk::DescriptorType::COMBINED_IMAGE_SAMPLER));
-            writes.push(create_write(set, DenoiseDescriptorSetLayout::DIFFUSE_BINDING, &normal_info,  vk::DescriptorType::COMBINED_IMAGE_SAMPLER))
+            writes.push(create_write(set, DenoiseDescriptorSetLayout::DIFFUSE_BINDING, &diffuse_info,  vk::DescriptorType::COMBINED_IMAGE_SAMPLER))
         }
 
         unsafe { device.update_descriptor_sets(&writes, &[]) };

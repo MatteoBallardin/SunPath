@@ -6,5 +6,5 @@ layout(location = 0) rayPayloadInEXT ray_payload_t payload;
 
 void main() {
     payload.dist = -1.0;
-    payload.emission = vec3(0.05, 0.05, 0.1);
+    payload.emission = vec3(0.0, 0.0, 0.0);
 }

@@ -224,6 +224,11 @@ impl Gltf {
                 let alpha_mode = material.alpha_mode();
                 let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
                 let double_sided = material.double_sided();
+                let transmission_factor = material
+                    .transmission()
+                    .map_or(0.0, |t| t.transmission_factor());
+
+                let ior = material.ior().unwrap_or(1.5);
 
                 // The code is repeated because the type of the textures are not the same
                 // TODO: crate a macro
@@ -253,6 +258,8 @@ impl Gltf {
                     alpha_mode,
                     alpha_cutoff,
                     double_sided,
+                    transmission_factor,
+                    ior,
                 };
 
                 let tex_coords = (
