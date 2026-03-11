@@ -59,6 +59,7 @@ void main() {
     int SAMPLES = 1;
     int BOUNCES = 10;
     int SHADOW_BOUNCES = BOUNCES / 2;
+    int ROUGH_BOUNCES = (BOUNCES/ 3) + 1;
     init_rng(gl_LaunchIDEXT.xy, frame_count);
 
     vec3 primary_albedo = vec3(1.0);
@@ -124,7 +125,7 @@ void main() {
 
             virtual_dist += prd.dist;
 
-            if (bounce >= 5 && roughness > 0.4) {
+            if (bounce >= ROUGH_BOUNCES && roughness > 0.4 && !in_glass) {
                 break;
             }
 
