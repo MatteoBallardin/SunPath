@@ -124,6 +124,10 @@ void main() {
 
             virtual_dist += prd.dist;
 
+            if (bounce >= 5 && roughness > 0.4) {
+                break;
+            }
+
             if (bounce == 0) {
                 imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.dist, 0.0, 0.0, 0.0));
                 imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_normal, roughness));
