@@ -119,6 +119,13 @@ void main() {
             float roughness = max(mat_info.x, 0.01);
             float metallic = clamp(mat_info.y, 0.0, 1.0);
 
+            //TODO Check utility of this
+            if (bounce > 0) {
+                float bias_strength = 0.5;
+                float bias_weight = smoothstep(0.0, 0.5, roughness) * bias_strength;
+                roughness = mix(roughness, 1.0, bias_weight);
+            }
+
             vec2 trans_ior = unpackHalf2x16(prd.transmission_ior_packed);
             float transmission = trans_ior.x;
             float ior = max(trans_ior.y, 1.0);
