@@ -119,6 +119,8 @@ void main() {
             float roughness = max(mat_info.x, 0.01);
             float metallic = clamp(mat_info.y, 0.0, 1.0);
 
+            vec3 denoiser_albedo = mix(hit_albedo, vec3(1.0), metallic);
+
             //TODO Check utility of this
             if (bounce > 0) {
                 float bias_strength = 0.5;
@@ -139,7 +141,7 @@ void main() {
             if (bounce == 0) {
                 imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(prd.dist, 0.0, 0.0, 0.0));
                 imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_normal, roughness));
-                imageStore(diffuse_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_albedo, 0.0));
+                imageStore(diffuse_image, ivec2(gl_LaunchIDEXT.xy), vec4(denoiser_albedo, 0.0));
 
                 vec3 world_pos = rayOrigin + rayDir * prd.dist;
                 vec4 prev_clip = matrices_uniform_buffer.prev_view_proj * vec4(world_pos, 1.0);
@@ -153,12 +155,13 @@ void main() {
             if (!gbuffer_written) {
                 if (roughness > 0.1 || bounce == BOUNCES - 1) {
 
-                    primary_albedo = hit_albedo;
+
+                    primary_albedo = denoiser_albedo;
 
                     // Write the Reflected Depth, Normal, and Diffuse
                     imageStore(depth_image, ivec2(gl_LaunchIDEXT.xy), vec4(virtual_dist, 0.0, 0.0, 0.0));
                     imageStore(normal_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_normal, roughness));
-                    imageStore(diffuse_image, ivec2(gl_LaunchIDEXT.xy), vec4(hit_albedo, 0.0));
+                    imageStore(diffuse_image, ivec2(gl_LaunchIDEXT.xy), vec4(denoiser_albedo, 0.0));
 
                     vec3 virtual_pos = origin.xyz + direction.xyz * virtual_dist;
                     vec4 prev_clip = matrices_uniform_buffer.prev_view_proj * vec4(virtual_pos, 1.0);
