@@ -10,6 +10,12 @@ pub struct BlasInstance<'a> {
     pub blas_instance_index: u32, // contains the index of the instance, NOT of the blas, so we can fetch instance-specific information in the shader, by passing it as gl_InstanceCustomIndexEXT
 }
 
+//TODO this is cause I can't self reference the blas
+pub struct BlasMetaData {
+    pub transform: vk::TransformMatrixKHR,
+    pub blas_instance_index: u32,
+}
+
 // Bottom-Level Acceleration Structure
 pub struct BLAS {
     blas: vulkan_abstraction::AccelerationStructure,

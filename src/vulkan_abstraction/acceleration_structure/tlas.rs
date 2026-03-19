@@ -59,7 +59,7 @@ impl TLAS {
 
     #[allow(unused)]
     pub fn rebuild(&mut self, blas_instances: &[vulkan_abstraction::BlasInstance]) -> SrResult<()> {
-        let instances_buffer = Self::make_instances_buffer(Rc::clone(self.tlas.core()), blas_instances)?;
+        let instances_buffer = Self::insert_in_instances_buffer(Rc::clone(self.tlas.core()), blas_instances)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
 
@@ -70,9 +70,11 @@ impl TLAS {
         Ok(())
     }
 
-    fn make_instances_buffer(
+    //TODO questo deve essere diviso in oggetti statici e non per ottimizzare al meglio l'allocazione
+    fn insert_in_instances_buffer(
         core: Rc<vulkan_abstraction::Core>,
         blas_instances: &[vulkan_abstraction::BlasInstance],
+        instances_buffer: &mut vulkan_abstraction::Buffer,
     ) -> SrResult<vulkan_abstraction::Buffer> {
         let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = blas_instances
             .iter()
@@ -98,13 +100,25 @@ impl TLAS {
             .collect();
 
         // buffer to hold the instances
-        let instances_buffer = vulkan_abstraction::Buffer::new_from_data(
-            core,
-            &blas_instances,
-            gpu_allocator::MemoryLocation::GpuOnly,
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-            "TLAS instances buffer",
-        )?;
+        // let instances_buffer = vulkan_abstraction::Buffer::new_from_data(
+        //     core,
+        //     &blas_instances,
+        //     gpu_allocator::MemoryLocation::CpuToGpu,
+        //     vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+        //     "TLAS instances buffer",
+        // )?;
+
+        let mapped_memory = instances_buffer.map::<vk::AccelerationStructureInstanceKHR>()?;
+
+        // 2. Scrivi i dati sovrascrivendo quelli vecchi
+        for (i, instance) in blas_instances.iter().enumerate() {
+            mapped_memory[i] = vk::AccelerationStructureInstanceKHR {
+                transform: instance.transform,
+                instance_custom_index_and_mask: instance.instance_custom_index_and_mask,
+                instance_shader_binding_table_record_offset_and_flags:  instance.instance_shader_binding_table_record_offset_and_flags,
+                acceleration_structure_reference: instance.acceleration_structure_reference,
+            };
+        }
 
         Ok(instances_buffer)
     }
