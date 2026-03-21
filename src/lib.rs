@@ -681,9 +681,11 @@ impl Renderer {
             // Use (*this_ptr).core because 'self.core' is locked by 'img_dependent_data'
             let device = (*this_ptr).core.device().inner();
 
+
             let begin_info = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
             device.begin_command_buffer(cmd_buf, &begin_info)?;
+
 
             (*this_ptr).cmd_raytracing_render(
                 cmd_buf,
@@ -1528,7 +1530,7 @@ impl Renderer {
                 blas_instance_index: cpu_instance.blas_instance_index,
             }
         }).collect::<Vec<_>>();
-        self.tlas.rebuild(blas_instances, &mut self.instances_buffer )?;
+        self.tlas.update(blas_instances, &mut self.instances_buffer )?;
         Ok(())
     }
 }

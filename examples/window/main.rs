@@ -282,7 +282,6 @@ impl App {
         let rotation = na::Rotation3::from_axis_angle(&na::Vector3::y_axis(), time);
         self.res_mut().renderer.set_object_transform(3, rotation.to_homogeneous());
 
-        // 3. Rebuild the TLAS before rendering!
         self.res_mut().renderer.rebuild_tlas()?;
 
         let frame_index = self.frame_count as usize % MAX_FRAMES_IN_FLIGHT;
