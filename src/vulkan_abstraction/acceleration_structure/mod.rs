@@ -25,6 +25,7 @@ impl AccelerationStructure {
         build_range_infos: &[vk::AccelerationStructureBuildRangeInfoKHR],
         geometries: &[vk::AccelerationStructureGeometryKHR],
         allow_update: bool,
+        fast_build: bool,
     ) -> SrResult<Self> {
         assert_eq!(geometries.len(), build_range_infos.len());
 
@@ -34,6 +35,13 @@ impl AccelerationStructure {
             vk::BuildAccelerationStructureFlagsKHR::empty()
         };
 
+        let build_type = if fast_build {
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD
+        } else {
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+        };
+        
+
         // parameters on how to build the acceleration structure.
         // this temporary version is used to calculate how much memory to allocate for it,
         // and the final version which is used to really build the acceleration structure will be based on it,
@@ -41,7 +49,7 @@ impl AccelerationStructure {
         let incomplete_build_geometry_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
             .geometries(&geometries)
             // PREFER_FAST_TRACE -> prioritize trace performance over build time
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE | allow_update_flag)
+            .flags(build_type | allow_update_flag)
             // BUILD as opposed to UPDATE
             .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
             .ty(level);
@@ -278,6 +286,7 @@ impl AccelerationStructure {
         &mut self,
         build_range_infos: &[vk::AccelerationStructureBuildRangeInfoKHR],
         geometries: &[vk::AccelerationStructureGeometryKHR],
+        fast_build: bool,
     ) -> SrResult<()> {
         *self = Self::new(
             Rc::clone(&self.core),
@@ -285,6 +294,7 @@ impl AccelerationStructure {
             build_range_infos,
             geometries,
             self.allow_update,
+            fast_build,
         )?;
 
         log::debug!("{:?} acceleration structure rebuilt", self.level);

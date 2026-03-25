@@ -28,6 +28,7 @@ impl TLAS {
             &[build_range_info],
             &[geometry],
             true,
+            false
         )?;
 
         Ok(Self { tlas })
@@ -46,6 +47,7 @@ impl TLAS {
     /// - switch one BLAS instance for another, possibly to switch LODs
     #[allow(unused)]
     pub fn update(&mut self, blas_instances: &[vulkan_abstraction::BlasInstance] , instances_buffer: & mut vulkan_abstraction::Buffer ) -> SrResult<()> {
+        if !self.tlas.allow_update { return SrResult::Err(SrError::new_custom("The structure is not updatable".to_string())); }
         Self::insert_in_instances_buffer(Rc::clone(self.tlas.core()), blas_instances , instances_buffer)?;
 
         let geometry = Self::make_geometry(&instances_buffer);
@@ -65,7 +67,7 @@ impl TLAS {
 
         let build_range_info = Self::make_build_range_info(blas_instances.len() as u32);
 
-        self.tlas.rebuild(&[build_range_info], &[geometry])?;
+        self.tlas.rebuild(&[build_range_info], &[geometry] , false )?;
 
         Ok(())
     }
