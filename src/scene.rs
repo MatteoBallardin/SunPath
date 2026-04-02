@@ -7,11 +7,11 @@ use nalgebra as na;
 
 type BlasInstanceInfo = (usize, na::Matrix4<f32>);
 
-pub struct SceneData {
+pub struct SceneData<T,Y> {
     pub textures: Vec<vulkan_abstraction::gltf::Texture>,
     pub samplers: Vec<vulkan_abstraction::gltf::Sampler>,
     pub images: Vec<vulkan_abstraction::gltf::Image>,
-    pub primitive_data_map: vulkan_abstraction::gltf::PrimitiveDataMap,
+    pub primitive_data_map: vulkan_abstraction::gltf::PrimitiveDataMap<T,Y>,
 }
 
 pub struct Scene {

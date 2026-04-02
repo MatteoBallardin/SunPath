@@ -35,7 +35,7 @@ pub struct BLAS {
     #[allow(unused)]
     vertex_buffer: vulkan_abstraction::VertexBuffer,
     #[allow(unused)]
-    index_buffer: vulkan_abstraction::IndexBuffer,
+    index_buffer: vulkan_abstraction::IndexBuffer<u32>,
     #[allow(unused)]
     is_dirty: bool,
     pub state: BlasState,
