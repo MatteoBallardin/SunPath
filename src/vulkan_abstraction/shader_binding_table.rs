@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::{error::SrResult, vulkan_abstraction};
 use ash::vk;
-use crate::vulkan_abstraction::{Buffer, HostAccessibleBuffer};
+use crate::vulkan_abstraction::HostAccessibleBuffer;
 
 fn aligned_size(value: u32, alignment: u32) -> u32 {
     (value + alignment - 1) & !(alignment - 1)

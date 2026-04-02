@@ -102,7 +102,7 @@ impl AccelerationStructure {
         }?;
 
         // the scratch buffer that will be used for building the acceleration structure (and can be dropped afterwards)
-        let scratch_buffer = vulkan_abstraction::GpuOnlyBuffer::new(
+        let scratch_buffer: vulkan_abstraction::buffer::GpuOnlyBuffer<T> = vulkan_abstraction::GpuOnlyBuffer::new(
             Rc::clone(&core),
             acceleration_structure_size_info.build_scratch_size as usize,
             vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS | vk::BufferUsageFlags::STORAGE_BUFFER,

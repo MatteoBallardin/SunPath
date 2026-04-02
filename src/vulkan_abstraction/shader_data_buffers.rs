@@ -4,7 +4,7 @@ use ash::vk;
 use nalgebra as na;
 
 use crate::{CameraMatrices, error::SrResult, vulkan_abstraction};
-use crate::vulkan_abstraction::{Buffer, HostAccessibleBuffer};
+use crate::vulkan_abstraction::HostAccessibleBuffer;
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]

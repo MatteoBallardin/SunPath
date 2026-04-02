@@ -2,7 +2,6 @@ use std::{any::TypeId, ops::Deref, rc::Rc};
 
 use ash::vk;
 
-use crate::vulkan_abstraction::buffer::Buffer;
 use crate::vulkan_abstraction::GpuOnlyBuffer;
 use crate::{error::*, vulkan_abstraction};
 

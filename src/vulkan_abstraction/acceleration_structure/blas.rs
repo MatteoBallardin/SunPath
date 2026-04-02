@@ -139,8 +139,8 @@ impl<V, I> BLAS<V, I> {
     }
 
     #[allow(unused)]
-    pub fn update(&mut self,  vertex_buffer: vulkan_abstraction::VertexBuffer,
-                  index_buffer: vulkan_abstraction::IndexBuffer, ) -> SrResult<()> {
+    pub fn update(&mut self,  vertex_buffer: vulkan_abstraction::VertexBuffer<V>,
+                  index_buffer: vulkan_abstraction::IndexBuffer<I>, ) -> SrResult<()> {
         if !self.blas.allow_update { return SrResult::Err(SrError::new_custom("The structure is not updatable".to_string())); }
 
         let geometry = Self::make_geometry(&vertex_buffer, &index_buffer);

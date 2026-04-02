@@ -8,7 +8,6 @@ use std::rc::Rc;
 use ash::vk;
 
 use crate::{error::SrResult, utils, vulkan_abstraction};
-use crate::vulkan_abstraction::Buffer;
 
 pub struct Image {
     core: Rc<vulkan_abstraction::Core>,
