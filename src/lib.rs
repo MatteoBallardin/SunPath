@@ -63,7 +63,7 @@ pub struct Renderer {
 
     is_tlas_dirty : bool,
 
-    instances_buffer: vulkan_abstraction::Buffer,
+    instances_buffer: vulkan_abstraction::StagingBuffer<vk::AccelerationStructureInstanceKHR>,
     cpu_instances_data: Vec<vulkan_abstraction::BlasMetaData>,
 
     scene_images: Vec<vulkan_abstraction::Image>,
@@ -134,12 +134,11 @@ impl Renderer {
 
         let image_extent = utils::tuple_to_extent3d(image_extent);
 
-        let mut instances_buffer = vulkan_abstraction::Buffer::new::<vk::AccelerationStructureInstanceKHR>(
+        let mut instances_buffer = vulkan_abstraction::StagingBuffer::new(
             Rc::clone(&core),
-            MAX_TLAS_INSTANCES, // Numero di elementi
-            gpu_allocator::MemoryLocation::CpuToGpu, // This uses reBar when possible
-            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS, //TODO flags were temporary
-            "Persistent TLAS Instances Buffer",
+            MAX_TLAS_INSTANCES,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            "Cpu side instances of blases"
         )?; //TODO const value a caso
 
 

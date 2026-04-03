@@ -5,7 +5,7 @@ use ash::vk;
 use crate::{error::*, vulkan_abstraction};
 
 pub struct VertexBuffer {
-    buffer: vulkan_abstraction::Buffer,
+    buffer: vulkan_abstraction::GpuOnlyBuffer,
     len: usize,
     stride: usize,
 }
@@ -19,10 +19,9 @@ impl VertexBuffer {
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
 
         Ok(Self {
-            buffer: vulkan_abstraction::Buffer::new_from_data(
+            buffer: vulkan_abstraction::GpuOnlyBuffer::new_from_data(
                 core,
                 data,
-                gpu_allocator::MemoryLocation::GpuOnly,
                 usage_flags,
                 "vertex buffer for BLAS usage",
             )?,
@@ -39,10 +38,9 @@ impl VertexBuffer {
             | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR;
 
         Ok(Self {
-            buffer: vulkan_abstraction::Buffer::new::<T>(
+            buffer: vulkan_abstraction::GpuOnlyBuffer::new::<T>(
                 core,
                 len,
-                gpu_allocator::MemoryLocation::GpuOnly,
                 usage_flags,
                 "vertex buffer for BLAS usage",
             )?,
@@ -52,7 +50,7 @@ impl VertexBuffer {
     }
 
     #[allow(dead_code)]
-    pub fn buffer(&self) -> &vulkan_abstraction::Buffer {
+    pub fn buffer(&self) -> &vulkan_abstraction::GpuOnlyBuffer {
         &self.buffer
     }
     pub fn len(&self) -> usize {
@@ -63,7 +61,7 @@ impl VertexBuffer {
     }
 }
 impl Deref for VertexBuffer {
-    type Target = vulkan_abstraction::Buffer;
+    type Target = vulkan_abstraction::GpuOnlyBuffer;
     fn deref(&self) -> &Self::Target {
         &self.buffer
     }

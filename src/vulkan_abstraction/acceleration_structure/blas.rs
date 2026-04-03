@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::error::*;
 use crate::vulkan_abstraction;
-use crate::vulkan_abstraction::{IndexBuffer, VertexBuffer};
+use crate::vulkan_abstraction::{Buffer, IndexBuffer, VertexBuffer};
 use ash::vk;
 use ash::vk::AccelerationStructureBuildRangeInfoKHR;
 
