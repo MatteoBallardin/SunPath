@@ -1,14 +1,14 @@
 pub mod arena_core;
-pub mod arena_host;
 pub mod arena_gpu;
+pub mod arena_host;
 pub mod arena_keyed;
 pub mod index_buffer;
 pub mod vertex_buffer;
 
 //why use and not just mod?
 pub use arena_core::*;
-pub use arena_host::*;
 pub use arena_gpu::*;
+pub use arena_host::*;
 pub use arena_keyed::*;
 pub use index_buffer::*;
 use std::marker::PhantomData;
@@ -595,7 +595,6 @@ impl GpuOnlyBuffer {
         Ok(gpu_buffer)
     }
 }
-
 
 /// Derives the appropriate pipeline stages and access flags for reading a buffer
 /// based on the usage flags it was created with.

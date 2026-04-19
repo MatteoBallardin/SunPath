@@ -9,7 +9,6 @@ use crate::vulkan_abstraction::{Buffer, HostAccessibleBuffer};
 
 use super::{ArenaRingCore, GpuOnlyBuffer, StagingBuffer, impl_arena_ring_buffer};
 
-
 /// Arena buffer with arbitrary u64 keys.
 /// This let's let you allocate with unique sparse keys.
 /// The id→slot mapping lives only on CPU.
@@ -67,7 +66,6 @@ impl<T: Copy> ArenaKeyMappedBuffer<T> {
 }
 
 impl_arena_ring_buffer!(ArenaKeyMappedBuffer, ring, _core => { id_map: HashMap::new() });
-
 
 /// Arena buffer with arbitrary u64 keys. The id→slot mapping is also available
 /// on GPU as a storage buffer (`mapping_gpu[slot] = external_id_u32`).
@@ -168,7 +166,6 @@ impl_arena_ring_buffer!(ArenaGpuKeyMappepBuffer, ring, core => {
     mapping_staging: StagingBuffer::new_null(core.clone()),
 });
 
-
 /// Arena buffer with arbitrary u64 keys. The id→slot mapping is stored in a
 /// StagingBuffer, accessible from both CPU and GPU.
 //TODO document better of inner workings and correct use
@@ -204,7 +201,8 @@ impl<T: Copy> ArenaKeyMappedHostVisibleBuffer<T> {
 
     /// Insert or update. Returns (slot, data_copy). The mapping is updated in-place
     /// on the host-visible buffer (no copy command needed for the mapping).
-    pub fn insert(&mut self, id: u64, data: &T) -> SrResult<(usize, vk::BufferCopy)> { //TODO this lacks synchronization?
+    pub fn insert(&mut self, id: u64, data: &T) -> SrResult<(usize, vk::BufferCopy)> {
+        //TODO this lacks synchronization?
         let slot = if let Some(&existing_slot) = self.id_map.get(&id) {
             existing_slot
         } else {

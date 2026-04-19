@@ -97,7 +97,6 @@ struct EntityGpuData {
     material: Material,
 }
 
-
 // ─── Resource Manager ────────────────────────────────────────────────────────
 
 const ARENA_CAPACITY: vk::DeviceSize = 4096;
@@ -178,7 +177,11 @@ impl ResourceManager {
             const RESOLUTION: u32 = 64;
             let image_data = crate::utils::iterate_image_extent(RESOLUTION, RESOLUTION)
                 .map(|(x, y)| {
-                    if (x + y).is_multiple_of(2) { 0xff000000u32 } else { 0xffff00ffu32 }
+                    if (x + y).is_multiple_of(2) {
+                        0xff000000u32
+                    } else {
+                        0xffff00ffu32
+                    }
                 })
                 .map(u32::to_be_bytes)
                 .flatten()
@@ -187,7 +190,11 @@ impl ResourceManager {
             vulkan_abstraction::Image::new_from_data(
                 Rc::clone(&core),
                 image_data,
-                vk::Extent3D { width: RESOLUTION, height: RESOLUTION, depth: 1 },
+                vk::Extent3D {
+                    width: RESOLUTION,
+                    height: RESOLUTION,
+                    depth: 1,
+                },
                 vk::Format::R8G8B8A8_UNORM,
                 vk::ImageTiling::OPTIMAL,
                 gpu_allocator::MemoryLocation::GpuOnly,
@@ -504,7 +511,10 @@ impl ResourceManager {
         }
 
         while self.textures.len() < Self::NUMBER_OF_SAMPLERS {
-            self.textures.push((self.fallback_texture_sampler.inner(), self.fallback_texture_image.image_view()));
+            self.textures.push((
+                self.fallback_texture_sampler.inner(),
+                self.fallback_texture_image.image_view(),
+            ));
         }
 
         assert_eq!(self.textures.len(), Self::NUMBER_OF_SAMPLERS);

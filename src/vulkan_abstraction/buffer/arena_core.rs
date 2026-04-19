@@ -131,11 +131,7 @@ impl<T: Copy> ArenaRingCore<T> {
             name,
         )?;
 
-        staging.clone_section_into_gpu_only_buffer(
-            0,
-            capacity * std::mem::size_of::<T>() as vk::DeviceSize,
-            &mut gpu_only,
-        )?;
+        staging.clone_section_into_gpu_only_buffer(0, capacity * std::mem::size_of::<T>() as vk::DeviceSize, &mut gpu_only)?;
 
         Ok(Self {
             staging,

@@ -16,8 +16,7 @@ use crate::utils::env_var_as_bool;
 use crate::vulkan_abstraction::descriptor_sets::postprocess_descriptor_set::PostprocessDescriptorSetLayout;
 use crate::vulkan_abstraction::descriptor_sets::temporal_accumulation_descriptor_set::TemporalAccumulationDescriptorSetLayout;
 use crate::vulkan_abstraction::{
-    DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets,
-    PostprocessPass, TemporalPass,
+    DenoiseDescriptorSetLayout, DenoisePass, PostProcessDescriptorSets, PostprocessPass, TemporalPass,
 };
 
 pub const DENOISE_PASSES: u32 = 4;
