@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "bevy_extension"]
+resolver = "3"
+
 [package]
 name = "sunray"
 version = "0.2.0"
@@ -30,6 +34,7 @@ shaderc = "0.10.1"
 winit = { version = "0.30.13", features = ["rwh_05" , "wayland"] } #window example
 log4rs = "1.4.0" #logging for examples
 image = "0.25.8" #png example
+bevy = "0.18.1"
 
 [[example]]
 name = "png"

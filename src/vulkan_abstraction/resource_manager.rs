@@ -330,6 +330,12 @@ impl ResourceManager {
         self.entity_data.get(&id.0)
     }
 
+    /// Return the entity's current world transform as stored on the CPU side.
+    /// Returns `None` if the entity has been destroyed or was never created.
+    pub fn get_entity_transform(&self, id: vulkan_abstraction::EntityId) -> Option<vk::TransformMatrixKHR> {
+        self.entity_data.get(&id.0).map(|e| e.transform)
+    }
+
     pub fn entity_data(&self) -> &HashMap<u64, vulkan_abstraction::Entity> {
         &self.entity_data
     }

@@ -111,3 +111,218 @@ Thesis proposals:
   - [tutorial](https://docs.vulkan.org/tutorial/latest/00_Introduction.html)
   - [unofficaila tutorial](https://vulkan-tutorial.com/)
   - [paminerva tutorial](https://paminerva.github.io/docs/LearnVulkan/LearnVulkan)
+
+
+
+
+Files
+- bevy_extension/src/lib.rs:1 — SunrayPlugin, SunrayPluginConfig, SunrayCamera/SunrayEntity components, SunrayContext NonSend resource, four systems.
+- bevy_extension/src/surface.rs:1 — ash + raw-window-handle 0.6 surface creation (the example's helpers were pinned to rwh 0.5).
+- bevy_extension/src/swapchain.rs:1 — swapchain wrapper ported from examples/window/swapchain.rs.
+- bevy_extension/examples/window.rs:1 — Bevy-driven fly camera demo: cargo run -p bevy_extension --example window -- path/to/scene.glb.
+- bevy_extension/src/main.rs removed so the crate is pure library.
+
+System wiring (lib.rs:63)
+- Update: try_init_sunray — exclusive &mut World system, waits until a PrimaryWindow has a RawHandleWrapper + non-zero size, then builds SunrayContext and inserts it as NonSend.
+- Last.chain(): handle_resize → sync_camera → sync_entity_transforms → render_frame. All take Option<NonSendMut<SunrayContext>> so they no-op before init. sync_entity_transforms uses Changed<SunrayEntity> + a single rebuild_tlas() per frame.
+
+Fixes caught during build
+- World::get_non_send / insert_non_send (the _resource variants are deprecated in this Bevy).
+- CreateSurfaceFn is dyn Fn(...) with implicit 'static, so the closure needs move (handles are Copy).
+
+Known loose ends to decide on next
+- SunrayCamera is a standalone struct — not hooked up to bevy::transform::Transform. If you want Bevy-native camera transforms, I can swap it to read GlobalTransform instead.
+- initial_scene entity IDs are exposed via SunrayContext.initial_scene_entities but not auto-wrapped in ECS entities. A follow-up system could spawn Bevy entities carrying SunrayEntity(id) so you can drive per-entity transforms from ECS.
+- No runtime load_gltf / destroy_entity API yet — currently only initial_scene and per-entity transform sync. Easy to add a Commands-style wrapper when needed.
+
+Both done. Summary of changes:
+
+Example crash fix (examples/window.rs:26)
+- Defaults to examples/assets/Room.glb when no CLI arg — sunray's build_image_dependent_data asserts textures are padded to 1024, which only happens after a glTF load.
+
+Transform integration (lib.rs)
+- SunrayCamera is now just { fov_y_degrees: f32 } — position/orientation read from GlobalTransform (sync_camera uses gt.translation() + gt.forward()).
+- SunrayEntity is now SunrayEntity(EntityId) — a marker. Transforms come from the entity's GlobalTransform via a new mat4_to_na helper (glam and nalgebra are both column-major so from_column_slice(&m.to_cols_array()) is zero-loss).
+- Example driven entirely through Transform::look_at / transform.translation.
+
+Auto-spawn (lib.rs:144)
+- New SunrayPluginConfig::auto_spawn_initial_scene (default true). After the renderer loads the initial glTF, try_init_sunray spawns one Bevy entity per sunray entity with (SunrayEntity(id), Transform::default()).
+- sync_entity_transforms uses Ref<GlobalTransform> and skips frames where is_added() is true, so the glTF-loaded transforms remain authoritative until the user actively mutates Bevy Transform.
+
+Known tradeoff on auto-spawn: on frame 1, Bevy Transform reads as identity while sunray still renders each entity at its glTF-loaded pose. As soon as the user mutates a Transform, Bevy wins and sunray is overwritten. A fully bidirectional sync would need a
+public sunray API to read per-entity transforms — worth adding if you want ECS to reflect the glTF layout from frame 1. Say the word and I'll add Renderer::get_entity_transform upstream and wire it through.
+
+Builds clean (cargo check -p bevy_extension --example window passes).
+
+✻ Cogitated for 5m 41s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                                                                                                                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⏵⏵ accept edits on (shift+tab to cycle)                                                                                                                                                                                                           ⧉ In window.rs
+
+        --> src\vulkan_abstraction\buffer\arena_core.rs:124:12
+         |
+     … +57 lines (ctrl+o to expand)
+
+● Update(bevy_extension\examples\window.rs)
+⎿  Added 1 line, removed 1 line
+7  use std::{collections::HashSet, time::Instant};
+8  
+9  use bevy::prelude::*;
+10 -use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow, Window};                                                                                                                                                                          
+10 +use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};                                                                                                                                                                                  
+11  use bevy_extension::{SunrayCamera, SunrayPlugin, SunrayPluginConfig};
+12  
+13  #[derive(Resource, Default)]
+
+● Both done. Summary of changes:
+
+Example crash fix (examples/window.rs:26)
+- Defaults to examples/assets/Room.glb when no CLI arg — sunray's build_image_dependent_data asserts textures are padded to 1024, which only happens after a glTF load.
+
+Transform integration (lib.rs)
+- SunrayCamera is now just { fov_y_degrees: f32 } — position/orientation read from GlobalTransform (sync_camera uses gt.translation() + gt.forward()).
+- SunrayEntity is now SunrayEntity(EntityId) — a marker. Transforms come from the entity's GlobalTransform via a new mat4_to_na helper (glam and nalgebra are both column-major so from_column_slice(&m.to_cols_array()) is zero-loss).
+- Example driven entirely through Transform::look_at / transform.translation.
+
+Auto-spawn (lib.rs:144)
+- New SunrayPluginConfig::auto_spawn_initial_scene (default true). After the renderer loads the initial glTF, try_init_sunray spawns one Bevy entity per sunray entity with (SunrayEntity(id), Transform::default()).
+- sync_entity_transforms uses Ref<GlobalTransform> and skips frames where is_added() is true, so the glTF-loaded transforms remain authoritative until the user actively mutates Bevy Transform.
+
+Known tradeoff on auto-spawn: on frame 1, Bevy Transform reads as identity while sunray still renders each entity at its glTF-loaded pose. As soon as the user mutates a Transform, Bevy wins and sunray is overwritten. A fully bidirectional sync would need a
+public sunray API to read per-entity transforms — worth adding if you want ECS to reflect the glTF layout from frame 1. Say the word and I'll add Renderer::get_entity_transform upstream and wire it through.
+
+Builds clean (cargo check -p bevy_extension --example window passes).
+
+✻ Cogitated for 5m 41s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ What is there to implement next  
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⏵⏵ accept edits on (shift+tab to cycle)                                                                                                                                                                                                           ⧉ In window.rs
+Example crash fix (examples/window.rs:26)
+- Defaults to examples/assets/Room.glb when no CLI arg — sunray's build_image_dependent_data asserts textures are padded to 1024, which only happens after a glTF load.
+
+Transform integration (lib.rs)
+- SunrayCamera is now just { fov_y_degrees: f32 } — position/orientation read from GlobalTransform (sync_camera uses gt.translation() + gt.forward()).
+- SunrayEntity is now SunrayEntity(EntityId) — a marker. Transforms come from the entity's GlobalTransform via a new mat4_to_na helper (glam and nalgebra are both column-major so from_column_slice(&m.to_cols_array()) is zero-loss).
+- Example driven entirely through Transform::look_at / transform.translation.
+
+Auto-spawn (lib.rs:144)
+- New SunrayPluginConfig::auto_spawn_initial_scene (default true). After the renderer loads the initial glTF, try_init_sunray spawns one Bevy entity per sunray entity with (SunrayEntity(id), Transform::default()).
+- sync_entity_transforms uses Ref<GlobalTransform> and skips frames where is_added() is true, so the glTF-loaded transforms remain authoritative until the user actively mutates Bevy Transform.
+
+Known tradeoff on auto-spawn: on frame 1, Bevy Transform reads as identity while sunray still renders each entity at its glTF-loaded pose. As soon as the user mutates a Transform, Bevy wins and sunray is overwritten. A fully bidirectional sync would need a
+public sunray API to read per-entity transforms — worth adding if you want ECS to reflect the glTF layout from frame 1. Say the word and I'll add Renderer::get_entity_transform upstream and wire it through.
+
+Builds clean (cargo check -p bevy_extension --example window passes).
+
+✻ Cogitated for 5m 41s
+
+❯ What is next to implement?                                                                                                                                                                                                                                        
+⎿  ⧉ Selected 1 lines from ..\..\..\..\..\..\mnt\c\Users\MatGa\Documents\GitHub\Bosh\SunPathForked\bevy_extension\src\lib.rs in RustRover
+
+● Four natural next steps, roughly in priority order:
+
+1. Swapchain recreation on OUT_OF_DATE_KHR (correctness bug). Right now render_frame just warns when acquire_next_image returns out-of-date; it should call rebuild_for_size(ctx, ctx.current_extent) and skip the rest of the frame. Without this,               
+   minimize/restore and some resize paths leave you stuck on a dead swapchain. — ~10 lines.
+2. Graceful shutdown. Your last run showed VUID-vkDestroyDevice-device-05137 validation errors on exit (descriptor set/pool not destroyed). Add an AppExit observer (or Plugin::cleanup) that calls device_wait_idle() and drops SunrayContext before bevy tears  
+   down the window. This won't fix the underlying sunray leak but will at least make shutdown ordered.
+3. Bidirectional Transform sync (the tradeoff we flagged). Add Renderer::get_entity_transform(id) -> Option<Matrix4> upstream in sunray, then in try_init_sunray spawn each Bevy entity with the real glTF pose instead of Transform::default(). Also lets
+   Added<SunrayEntity> become authoritative instead of a skip-first-frame hack.
+4. Runtime scene API. A small command-style wrapper: SunrayCommands::load_gltf(path) -> Vec<Entity>, despawn_in_sunray(entity). Either via an exclusive system reading a Commands-ish queue resource, or a dedicated event type. Needed to move past "one glTF at
+   startup."
+
+My recommendation: do #1 + #2 together in one pass (both are small, both are correctness, and they touch the same systems), then evaluate whether you want #3 or #4 next based on your demo goals. If you're building toward dynamic scenes, #4; if you want clean
+ECS↔sunray parity, #3.
+
+Want me to take #1 + #2 now?
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                          
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⏵⏵ accept edits on (shift+tab to cycle)
+
+
+
+- Defaults to examples/assets/Room.glb when no CLI arg — sunray's build_image_dependent_data asserts textures are padded to 1024, which only happens after a glTF load.
+
+Transform integration (lib.rs)
+- SunrayCamera is now just { fov_y_degrees: f32 } — position/orientation read from GlobalTransform (sync_camera uses gt.translation() + gt.forward()).
+- SunrayEntity is now SunrayEntity(EntityId) — a marker. Transforms come from the entity's GlobalTransform via a new mat4_to_na helper (glam and nalgebra are both column-major so from_column_slice(&m.to_cols_array()) is zero-loss).
+- Example driven entirely through Transform::look_at / transform.translation.
+
+Auto-spawn (lib.rs:144)
+- New SunrayPluginConfig::auto_spawn_initial_scene (default true). After the renderer loads the initial glTF, try_init_sunray spawns one Bevy entity per sunray entity with (SunrayEntity(id), Transform::default()).
+- sync_entity_transforms uses Ref<GlobalTransform> and skips frames where is_added() is true, so the glTF-loaded transforms remain authoritative until the user actively mutates Bevy Transform.
+
+Known tradeoff on auto-spawn: on frame 1, Bevy Transform reads as identity while sunray still renders each entity at its glTF-loaded pose. As soon as the user mutates a Transform, Bevy wins and sunray is overwritten. A fully bidirectional sync would need a
+public sunray API to read per-entity transforms — worth adding if you want ECS to reflect the glTF layout from frame 1. Say the word and I'll add Renderer::get_entity_transform upstream and wire it through.
+
+Builds clean (cargo check -p bevy_extension --example window passes).
+
+✻ Cogitated for 5m 41s
+
+❯ What is next to implement?                                                                                                                                                                                                                                        
+⎿  ⧉ Selected 1 lines from ..\..\..\..\..\..\mnt\c\Users\MatGa\Documents\GitHub\Bosh\SunPathForked\bevy_extension\src\lib.rs in RustRover
+
+● Four natural next steps, roughly in priority order:
+
+1. Swapchain recreation on OUT_OF_DATE_KHR (correctness bug). Right now render_frame just warns when acquire_next_image returns out-of-date; it should call rebuild_for_size(ctx, ctx.current_extent) and skip the rest of the frame. Without this,
+   minimize/restore and some resize paths leave you stuck on a dead swapchain. — ~10 lines.
+2. Graceful shutdown. Your last run showed VUID-vkDestroyDevice-device-05137 validation errors on exit (descriptor set/pool not destroyed). Add an AppExit observer (or Plugin::cleanup) that calls device_wait_idle() and drops SunrayContext before bevy tears
+   down the window. This won't fix the underlying sunray leak but will at least make shutdown ordered.
+3. Bidirectional Transform sync (the tradeoff we flagged). Add Renderer::get_entity_transform(id) -> Option<Matrix4> upstream in sunray, then in try_init_sunray spawn each Bevy entity with the real glTF pose instead of Transform::default(). Also lets
+   Added<SunrayEntity> become authoritative instead of a skip-first-frame hack.
+4. Runtime scene API. A small command-style wrapper: SunrayCommands::load_gltf(path) -> Vec<Entity>, despawn_in_sunray(entity). Either via an exclusive system reading a Commands-ish queue resource, or a dedicated event type. Needed to move past "one glTF at
+   startup."
+
+My recommendation: do #1 + #2 together in one pass (both are small, both are correctness, and they touch the same systems), then evaluate whether you want #3 or #4 next based on your demo goals. If you're building toward dynamic scenes, #4; if you want clean
+ECS↔sunray parity, #3.
+
+Want me to take #1 + #2 now?
+
+
+Builds clean (cargo check -p bevy_extension --example window).
+
+✻ Cooked for 5m 13s
+
+✻ Cooked for 5m 13s
+
+❯ Next steps,like handling data transfers for the meshes ecc..
+
+● Let me take a quick look at how sunray builds a BLAS today so I can give you a concrete recommendation rather than hand-waving.
+
+Searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● Good — now I have a concrete picture. The honest answer: "Bevy mesh data → sunray" is the biggest architectural lift left, because today sunray's scene loading is glTF-file-centric and all of BLAS/texture/material upload happens inside gltf::Gltf::new → scene.load_into_gpu → resource_manager.load_scene. There's no public API to build a BLAS from
+raw vertex/index buffers — so the plugin currently can't consume a Bevy Handle<Mesh>, a bevy_image::Image, or a StandardMaterial.
+
+Here's a staged roadmap, easiest → hardest. Each stage is independently shippable.
+
+Stage 1 — Mesh upload plumbing in sunray (the enabler, ~1 day)                                
+Add a public Renderer::create_mesh(positions: &[Vec3], normals: &[Vec3], uvs: &[Vec2], indices: &[u32], material: Material) -> SrResult<MeshHandle> and Renderer::destroy_mesh(MeshHandle). Under the hood it does what the glTF loader does per-primitive: allocate VertexBuffer/IndexBuffer, build a BLAS, register the material. Nothing in sunray is
+refactored — we just lift an internal pathway to pub. Without this, nothing below is possible.
+
+Stage 2 — Handle<Mesh> → sunray BLAS bridge in the plugin (~½ day)
+- New SunrayMesh(MeshHandle) component.
+- extract_meshes system reads AssetEvents<Mesh>: on LoadState::Loaded, pull the mesh's ATTRIBUTE_POSITION/NORMAL/UV_0 + indices() → call Renderer::create_mesh → stash the sunray handle in a HashMap<AssetId<Mesh>, MeshHandle> resource.
+- On AssetEvent::Unused, call destroy_mesh.
+- Entity spawn flow: commands.spawn((SunrayMeshOf(handle), Transform::...)) → another system creates the actual sunray entity using the stored MeshHandle.
+
+Stage 3 — Materials and textures (~1 day)
+Same pattern for Handle<Image> → sunray texture and Handle<StandardMaterial> → sunray material. The hard part is mapping PBR parameters (StandardMaterial has its own metallic/roughness/emissive fields); sunray's Material is KHR_glTF-shaped, so the mapping is mostly 1:1 but you'll need to handle base_color_texture: Option<Handle<Image>> by resolving
+to the sunray texture id.
+
+Stage 4 — Lifecycle/staging/streaming (~open-ended)                 
+Right now load_gltf is synchronous — it blocks the frame during staging buffer copies and calls device_wait_idle. For a real asset pipeline you'd want upload batching, a frame-budget limit, and potentially running extract/prepare in a dedicated sub-app (mirrors what bevy_render does with its RenderApp). This is where "handling data transfers" gets
+genuinely hard — not the copy itself, but doing it without stalling.
+
+My recommendation: start with Stage 1 — it's the unblocker and purely additive (no refactor of existing sunray code). Once that lands I can immediately wire up Stage 2 and you'll have a working cmds.spawn((Mesh3d(handle), Transform::...)) flow. Then reassess whether you want textures/materials (Stage 3) or async upload (Stage 4) first, based on
+whether your goal is "build Bevy scenes at runtime" (→ 3) or "stream large assets without hitches" (→ 4).
+
+Main tradeoff to flag now: this path re-implements a slice of bevy_render on top of sunray. It's the right shape, but it's real work — roughly 2–3 days for Stages 1–3 to be solid. If instead you decide the glTF-path API (LoadSunrayScene) is enough for your actual use case, you can stop here and skip the whole thing. Worth deciding before you
+invest.
+
+Want me to start on Stage 1?     

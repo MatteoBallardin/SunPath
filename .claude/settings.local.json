@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check *)",
+      "Bash(cargo search *)",
+      "Bash(xargs grep *)",
+      "Bash(cargo build *)",
+      "Bash(bevy_extension)",
+      "Bash(grep -E \"^\\(error|warning: unused|warning: `bevy_extension\\)\")"
+    ]
+  }
+}

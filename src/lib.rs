@@ -685,6 +685,28 @@ impl Renderer {
         self.resource_manager.set_entity_transform(id, vk_transform)
     }
 
+    /// Read back an entity's current world transform as a full 4x4 matrix.
+    /// The bottom row is always `[0, 0, 0, 1]` since sunray stores affine-only
+    /// transforms internally. Returns `None` if the entity id is unknown.
+    pub fn get_entity_transform(
+        &self,
+        id: vulkan_abstraction::EntityId,
+    ) -> Option<nalgebra::Matrix4<f32>> {
+        self.resource_manager
+            .get_entity_transform(id)
+            .map(Self::vk_transform_to_na_mat4)
+    }
+
+    fn vk_transform_to_na_mat4(t: vk::TransformMatrixKHR) -> nalgebra::Matrix4<f32> {
+        let m = t.matrix;
+        nalgebra::Matrix4::new(
+            m[0], m[1], m[2], m[3],
+            m[4], m[5], m[6], m[7],
+            m[8], m[9], m[10], m[11],
+            0.0, 0.0, 0.0, 1.0,
+        )
+    }
+
     pub fn set_camera(&mut self, camera: crate::Camera) -> SrResult<()> {
         let mut matrices = camera.as_matrices(self.image_extent);
 
