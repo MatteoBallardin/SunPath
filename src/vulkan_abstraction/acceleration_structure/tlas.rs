@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ash::vk;
@@ -90,8 +90,8 @@ impl TLAS {
     #[allow(unused)]
     pub fn rebuild_from_entities( //TODO this lacks the actual syncronization
         &mut self,
-        entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        entities: &BTreeMap<u64, vulkan_abstraction::Entity>,
+        blases : & BTreeMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
         Self::insert_in_instances_buffer_from_entity(Rc::clone(self.tlas.core()), entities ,blases, instances_buffer)?;
@@ -109,8 +109,8 @@ impl TLAS {
 
     pub fn new_from_entities( //TODO the instance buffer length and actual use since it is longer than needed 
         core: Rc<vulkan_abstraction::Core>,
-        entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        entities: &BTreeMap<u64, vulkan_abstraction::Entity>,
+        blases : & BTreeMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<Self> {
         Self::insert_in_instances_buffer_from_entity(Rc::clone(&core), entities, blases, instances_buffer)?;
@@ -134,8 +134,8 @@ impl TLAS {
     #[allow(unused)]
     pub fn update_from_entities(
         &mut self, 
-        entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        entities: &BTreeMap<u64, vulkan_abstraction::Entity>,
+        blases : & BTreeMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
         if !self.tlas.allow_update {
@@ -155,8 +155,8 @@ impl TLAS {
 
     fn insert_in_instances_buffer_from_entity(
         core: Rc<vulkan_abstraction::Core>,
-        entities: &HashMap<u64, vulkan_abstraction::Entity>,
-        blases : & HashMap<u64, vulkan_abstraction::BLAS>,
+        entities: &BTreeMap<u64, vulkan_abstraction::Entity>,
+        blases : & BTreeMap<u64, vulkan_abstraction::BLAS>,
         instances_buffer: &mut impl Buffer,
     ) -> SrResult<()> {
         let blas_instances: Vec<vk::AccelerationStructureInstanceKHR> = entities

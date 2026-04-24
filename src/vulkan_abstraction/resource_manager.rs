@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::vulkan_abstraction::{ArenaBuffer, Buffer, EntityGpuData, HostAccessibleBuffer, Material, MatricesBufferContents, BLAS};
-use crate::{error::SrResult, vulkan_abstraction, CameraMatrices, MAX_TLAS_INSTANCES};
+use crate::{error::SrResult, vulkan_abstraction, CameraMatrices, MeshHandle, MAX_TLAS_INSTANCES};
 use ash::vk;
 use log::info;
 use rand::{RngExt};
@@ -19,17 +19,17 @@ pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances
     // Binding 12 reads this as entity_transform_t[slot] in shaders.
     transforms: vulkan_abstraction::ArenaKeyMappedBuffer<vk::TransformMatrixKHR>,
     // CPU-side metadata per entity (blas_index, transform — needed for TLAS rebuild & emissive indirection)
-    entity_data: HashMap<u64, vulkan_abstraction::Entity>,
+    entity_data: BTreeMap<u64, vulkan_abstraction::Entity>,
 
 
     // Acceleration structures
-    blases: HashMap<u64 ,vulkan_abstraction::BLAS>,
+    blases: BTreeMap<u64 ,vulkan_abstraction::BLAS>,
     tlas: vulkan_abstraction::TLAS,
 
     instances_buffer: vulkan_abstraction::StagingBuffer<vk::AccelerationStructureInstanceKHR>,
 
     /// instance index to entity this is needed to get O(1) reverse search on blas instance removal
-    instance_to_entity: HashMap<u64, u64 >,
+    instance_to_entity: BTreeMap<u64, u64 >,
 
 
     // Emissive lighting — local-space triangles stored per-BLAS (arena ring buffer)
@@ -45,7 +45,7 @@ pub(crate) struct ResourceManager { //TODO ring buffer for cameras and instances
     samplers: Vec<vulkan_abstraction::Sampler>,
 
     // Owned images with unique IDs (includes scene images)
-    images: HashMap<u64, vulkan_abstraction::Image>,
+    images: BTreeMap<u64, vulkan_abstraction::Image>,
 
     // Fallback and default textures/samplers
     fallback_texture_image: vulkan_abstraction::Image,
@@ -136,14 +136,14 @@ impl ResourceManager {
             vk::SamplerMipmapMode::LINEAR,
         )?;
 
-        Ok(Self {
+        let mut manager = Self {
             matrices_uniform_buffer,
 
             entities,
             transforms,
-            entity_data: HashMap::new(),
+            entity_data: BTreeMap::new(),
 
-            blases:Default::default(),
+            blases: Default::default(),
             tlas,
             instances_buffer,
 
@@ -160,7 +160,7 @@ impl ResourceManager {
 
             samplers: Vec::new(),
 
-            images: HashMap::new(),
+            images: BTreeMap::new(),
 
             fallback_texture_image,
             fallback_texture_sampler,
@@ -168,7 +168,21 @@ impl ResourceManager {
 
             buffer_copies_queued: vec![],
             core,
-        })
+        };
+
+        // Pre-fill the texture slot table with fallback entries so
+        // `build_image_dependent_data` can run without a glTF scene loaded —
+        // otherwise the descriptor-set assert at
+        // `raytracing_descriptor_set.rs:342` fires with `0 != 1024`.
+        manager.set_textures(&[], &[], &[]);
+
+        // Seed the emissive indirection buffer with a dummy entry so descriptor
+        // writes never bind VK_NULL_HANDLE (validation error
+        // VUID-VkDescriptorBufferInfo-buffer-02998). Later mutations through
+        // `rebuild_emissive_indirection` replace this with real data.
+        manager.rebuild_emissive_indirection()?;
+
+        Ok(manager)
     }
 
 
@@ -336,7 +350,7 @@ impl ResourceManager {
         self.entity_data.get(&id.0).map(|e| e.transform)
     }
 
-    pub fn entity_data(&self) -> &HashMap<u64, vulkan_abstraction::Entity> {
+    pub fn entity_data(&self) -> &BTreeMap<u64, vulkan_abstraction::Entity> {
         &self.entity_data
     }
 
@@ -421,11 +435,11 @@ impl ResourceManager {
         &self.tlas
     }
 
-    pub fn blases(&self) -> &HashMap<u64, BLAS> {
+    pub fn blases(&self) -> &BTreeMap<u64, BLAS> {
         &self.blases
     }
 
-    pub fn blases_mut(&mut self) -> &mut HashMap<u64, BLAS> {
+    pub fn blases_mut(&mut self) -> &mut BTreeMap<u64, BLAS> {
         &mut self.blases
     }
 
@@ -471,6 +485,39 @@ impl ResourceManager {
         }
 
         assert_eq!(self.textures.len(), Self::NUMBER_OF_SAMPLERS);
+    }
+
+    // ─── Standalone mesh upload (no glTF) ────────────────────────────────────
+
+    /// Upload `mesh` as a new BLAS and return its handle. The caller pairs it
+    /// with `create_entity` to place instances in the scene; no TLAS rebuild
+    /// happens here.
+    pub fn create_mesh(&mut self, mesh: &crate::MeshData) -> SrResult<MeshHandle> {
+        let vertices: Vec<vulkan_abstraction::gltf::Vertex> = mesh.into();
+        let vertex_buffer = vulkan_abstraction::VertexBuffer::new_for_blas_from_data(
+            Rc::clone(&self.core),
+            &vertices,
+        )?;
+        let index_buffer = vulkan_abstraction::IndexBuffer::new_for_blas_from_data(
+            Rc::clone(&self.core),
+            &mesh.indices,
+        )?;
+        let blas = vulkan_abstraction::BLAS::new(
+            Rc::clone(&self.core),
+            vertex_buffer,
+            index_buffer,
+            Vec::new(),
+            false,
+        )?;
+        let id = Self::generate(&self.blases);
+        self.blases.insert(id, blas);
+        Ok(MeshHandle(id))
+    }
+
+    /// Drop the BLAS backing `handle`. The caller must ensure no live entity
+    /// still references this mesh and that the GPU is idle.
+    pub fn destroy_mesh(&mut self, handle: MeshHandle) {
+        self.blases.remove(&handle.0);
     }
 
     // ─── Scene loading ───────────────────────────────────────────────────────
@@ -588,11 +635,11 @@ impl ResourceManager {
         self.buffer_copies_queued.push((src, dst, region));
     }
 
-    pub(crate) fn generate<T>(hash_map: &HashMap<u64, T>) -> u64 {
+    pub(crate) fn generate<T>(map: &BTreeMap<u64, T>) -> u64 {
         loop {
             let mut rng = rand::rng();
             let key = rng.random::<u64>();
-            if !hash_map.contains_key(&key) {
+            if !map.contains_key(&key) {
                 return key;
             }
         }

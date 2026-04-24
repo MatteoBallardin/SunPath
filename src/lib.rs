@@ -1,11 +1,13 @@
 pub mod camera;
 pub mod error;
+pub mod mesh;
 pub mod scene;
 pub mod utils;
 pub mod vulkan_abstraction;
 
 pub use camera::*;
 use error::*;
+pub use mesh::*;
 pub use scene::*;
 
 use std::{collections::HashMap, rc::Rc};
@@ -646,6 +648,41 @@ impl Renderer {
         let ids = self.resource_manager.load_scene(scene, scene_data)?;
         self.image_dependant_data = HashMap::new();
         Ok(ids)
+    }
+
+    /// Upload a mesh and return its handle. The mesh is not drawn until paired
+    /// with `create_entity`.
+    pub fn create_mesh(&mut self, mesh: &MeshData) -> SrResult<MeshHandle> {
+        self.resource_manager.create_mesh(mesh)
+    }
+
+    /// Drop a mesh previously returned by `create_mesh`. Destroys any entity
+    /// that still references it first — calling this while entities still use
+    /// the mesh is a logic error.
+    pub fn destroy_mesh(&mut self, handle: MeshHandle) -> SrResult<()> {
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+        self.resource_manager.destroy_mesh(handle);
+        Ok(())
+    }
+
+    /// Spawn an entity that draws `mesh` with `material` at `transform`.
+    /// Automatically rebuilds the TLAS and clears image-dependent descriptor
+    /// sets (they will be rebuilt on the next frame).
+    pub fn create_entity(
+        &mut self,
+        mesh: MeshHandle,
+        material: &vulkan_abstraction::gltf::Material,
+        transform: nalgebra::Matrix4<f32>,
+    ) -> SrResult<vulkan_abstraction::EntityId> {
+        let vk_transform = Self::na_mat4_to_vk_transform(transform);
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+        let id = self.resource_manager.create_entity(mesh.0, material, vk_transform)?;
+        self.resource_manager.rebuild_tlas()?;
+        // Re-seed the emissive indirection buffer — adding an entity changes
+        // which arena slots map to emissive triangles.
+        self.resource_manager.rebuild_emissive_indirection()?;
+        self.clear_image_dependent_data();
+        Ok(id)
     }
 
     /// Spawn a new instance that shares the BLAS and material of `src` with a new transform.

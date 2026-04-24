@@ -33,10 +33,11 @@ use nalgebra as na;
 use sunray::{
     camera::Camera as SrCamera,
     error::{ErrorSource, SrResult},
-    vulkan_abstraction, Renderer, MAX_FRAMES_IN_FLIGHT,
+    vulkan_abstraction, MeshHandle, Renderer, MAX_FRAMES_IN_FLIGHT,
 };
 
 pub use sunray;
+pub use sunray::{MeshData as SunrayMeshData, MeshHandle as SunrayMeshHandle};
 
 /// Plugin configuration. Stored as a Bevy `Resource` so it can be tweaked
 /// between `add_plugins` and the first frame.
@@ -79,7 +80,15 @@ impl Plugin for SunrayPlugin {
             .add_message::<DespawnSunrayEntity>()
             // Scene commands run in Update so Bevy entities spawned as a side
             // effect are visible to the Last-chain render systems this frame.
-            .add_systems(Update, (try_init_sunray, process_scene_events).chain())
+            .add_systems(
+                Update,
+                (
+                    try_init_sunray,
+                    process_scene_events,
+                    spawn_pending_sunray_entities,
+                )
+                    .chain(),
+            )
             .add_systems(
                 Last,
                 (
@@ -134,17 +143,43 @@ impl Default for SunrayCamera {
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SunrayEntity(pub vulkan_abstraction::EntityId);
 
+/// Reference to a mesh uploaded to sunray. Obtain a `MeshHandle` by calling
+/// `ctx.renderer.create_mesh(&data)` from a system with
+/// `NonSendMut<SunrayContext>` access. Pair this with a `SunrayMaterial` and
+/// a `GlobalTransform` on a Bevy entity; the plugin will call `create_entity`
+/// next frame and insert a `SunrayEntity` component alongside it.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SunrayMesh(pub MeshHandle);
+
+/// PBR material for a `SunrayMesh`. Read once at `create_entity` time; later
+/// mutations are ignored (material updates require reuploading the entity's
+/// GPU data, which isn't wired yet).
+#[derive(Component, Clone, Debug)]
+pub struct SunrayMaterial(pub vulkan_abstraction::gltf::Material);
+
+impl Default for SunrayMaterial {
+    fn default() -> Self {
+        Self(vulkan_abstraction::gltf::Material::default())
+    }
+}
+
 /// `NonSend` resource that owns every `!Send` piece of Vulkan state. Built on
 /// the first `Update` where a primary window with a valid `RawHandleWrapper`
 /// is available.
+///
+/// Field order matters — Rust drops struct fields top-to-bottom, and the
+/// Vulkan spec requires the `VkSwapchainKHR` to be destroyed *before* its
+/// associated `VkSurfaceKHR` (VUID-vkDestroySurfaceKHR-surface-01266).
+/// So: renderer first (pipelines / image-dependent cmd buffers) → per-frame
+/// sync primitives → swapchain → surface last.
 pub struct SunrayContext {
     pub renderer: Renderer,
-    pub surface: surface::Surface,
-    pub swapchain: swapchain::Swapchain,
     pub img_acquired_sems: Vec<vulkan_abstraction::Semaphore>,
     pub img_rendered_fences: Vec<vk::Fence>,
     pub ready_to_present_sems: Vec<vulkan_abstraction::Semaphore>,
     pub img_barrier_to_present_cmd_bufs: Vec<vulkan_abstraction::CmdBuffer>,
+    pub swapchain: swapchain::Swapchain,
+    pub surface: surface::Surface,
     pub frame_index: usize,
     pub current_extent: (u32, u32),
     /// Entity IDs produced by the `initial_scene` glTF load, preserved for
@@ -280,6 +315,35 @@ fn process_scene_events(
 fn invalidate_stale_fences(ctx: &mut SunrayContext) {
     for f in ctx.img_rendered_fences.iter_mut() {
         *f = vk::Fence::null();
+    }
+}
+
+/// Turn Bevy entities carrying `SunrayMesh` + `SunrayMaterial` (but no
+/// `SunrayEntity` yet) into live sunray entities. Reads the entity's current
+/// `GlobalTransform` as the initial pose; subsequent transform changes are
+/// picked up by `sync_entity_transforms`.
+fn spawn_pending_sunray_entities(
+    ctx: Option<NonSendMut<SunrayContext>>,
+    pending: Query<
+        (Entity, &SunrayMesh, &SunrayMaterial, &GlobalTransform),
+        Without<SunrayEntity>,
+    >,
+    mut commands: Commands,
+) {
+    let Some(mut ctx) = ctx else { return; };
+    let mut created_any = false;
+    for (entity, mesh, material, gt) in &pending {
+        let transform = mat4_to_na(gt.to_matrix());
+        match ctx.renderer.create_entity(mesh.0, &material.0, transform) {
+            Ok(id) => {
+                commands.entity(entity).insert(SunrayEntity(id));
+                created_any = true;
+            }
+            Err(e) => error!("create_entity for Bevy entity {entity:?} failed: {e}"),
+        }
+    }
+    if created_any {
+        invalidate_stale_fences(&mut ctx);
     }
 }
 
