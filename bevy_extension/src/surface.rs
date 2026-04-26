@@ -3,11 +3,15 @@
 //! helpers in `examples/window/utils` for the Bevy integration.
 
 use std::ffi::c_char;
+use std::rc::Rc;
 
 use ash::{ext, khr, vk};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-use sunray::error::{SrError, SrResult};
+use sunray::{
+    error::{SrError, SrResult},
+    vulkan_abstraction,
+};
 
 /// Instance extensions required to later create a surface from `display_handle`.
 /// Returned slice is `'static` so it can be passed directly to
@@ -105,15 +109,25 @@ pub fn create_surface(
 }
 
 /// Owns the `vk::SurfaceKHR` and the loader used to destroy it on drop.
+///
+/// Holds an `Rc<Core>` so the underlying `VkInstance` (owned by `Core`)
+/// cannot be destroyed before this surface is. Without this clone, if the
+/// `Surface` happens to be the last field dropped in its owner, the
+/// swapchain / renderer may release their own `Rc<Core>` first, freeing the
+/// instance and leaving `destroy_surface` pointing at a dead handle.
 pub struct Surface {
+    #[allow(dead_code)] // kept alive to extend the instance's lifetime
+    core: Rc<vulkan_abstraction::Core>,
     instance_fn: khr::surface::Instance,
     handle: vk::SurfaceKHR,
 }
 
 impl Surface {
-    pub fn new(entry: &ash::Entry, instance: &ash::Instance, handle: vk::SurfaceKHR) -> Self {
+    pub fn new(core: Rc<vulkan_abstraction::Core>, handle: vk::SurfaceKHR) -> Self {
+        let instance_fn = khr::surface::Instance::new(core.entry(), core.instance());
         Self {
-            instance_fn: khr::surface::Instance::new(entry, instance),
+            core,
+            instance_fn,
             handle,
         }
     }

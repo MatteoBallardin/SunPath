@@ -20,6 +20,7 @@ raw-window-handle = "0.6"
 nalgebra = "0.34"
 log = "0.4"
 parking_lot = "0.12"
+rand = "0.10.1"
 
 [dev-dependencies]
 log4rs = "1.4"

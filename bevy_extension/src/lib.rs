@@ -21,6 +21,7 @@
 pub mod surface;
 pub mod swapchain;
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ash::vk;
@@ -37,7 +38,10 @@ use sunray::{
 };
 
 pub use sunray;
-pub use sunray::{MeshData as SunrayMeshData, MeshHandle as SunrayMeshHandle};
+pub use sunray::{
+    MeshData as SunrayMeshData, MeshHandle as SunrayMeshHandle,
+    TextureHandle as SunrayTextureHandle,
+};
 
 /// Plugin configuration. Stored as a Bevy `Resource` so it can be tweaked
 /// between `add_plugins` and the first frame.
@@ -80,11 +84,15 @@ impl Plugin for SunrayPlugin {
             .add_message::<DespawnSunrayEntity>()
             // Scene commands run in Update so Bevy entities spawned as a side
             // effect are visible to the Last-chain render systems this frame.
+            // Despawns are processed before spawns so a same-frame
+            // remove-then-add (entity rebuilt, same Bevy id reused) lands in
+            // the right order.
             .add_systems(
                 Update,
                 (
                     try_init_sunray,
                     process_scene_events,
+                    handle_despawned_sunray_entities,
                     spawn_pending_sunray_entities,
                 )
                     .chain(),
@@ -95,6 +103,7 @@ impl Plugin for SunrayPlugin {
                     handle_resize,
                     sync_camera,
                     sync_entity_transforms,
+                    sync_entity_materials,
                     render_frame,
                 )
                     .chain(),
@@ -153,13 +162,52 @@ pub struct SunrayMesh(pub MeshHandle);
 
 /// PBR material for a `SunrayMesh`. Read once at `create_entity` time; later
 /// mutations are ignored (material updates require reuploading the entity's
-/// GPU data, which isn't wired yet).
-#[derive(Component, Clone, Debug)]
-pub struct SunrayMaterial(pub vulkan_abstraction::gltf::Material);
+/// GPU data, which isn't wired yet). Wraps sunray's GPU-layout `Material` —
+/// build it with `Material::default()` and override fields via struct-update
+/// syntax.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SunrayMaterial(pub vulkan_abstraction::Material);
 
 impl Default for SunrayMaterial {
     fn default() -> Self {
-        Self(vulkan_abstraction::gltf::Material::default())
+        Self(vulkan_abstraction::Material::default())
+    }
+}
+
+/// One-stop bundle for spawning a sunray-rendered object. Equivalent to
+/// `(SunrayMesh(mesh), SunrayMaterial(material), Transform)`; Bevy inserts
+/// `GlobalTransform` automatically via its Transform-propagation plumbing.
+///
+/// ```ignore
+/// commands.spawn(SunrayPbrBundle::new(mesh_handle)
+///     .with_material(Material { base_color_value: [1.0, 0.3, 0.3, 1.0], ..default() })
+///     .at(Transform::from_xyz(0.0, 1.0, 0.0)));
+/// ```
+#[derive(Bundle, Clone, Copy, Debug)]
+pub struct SunrayPbrBundle {
+    pub mesh: SunrayMesh,
+    pub material: SunrayMaterial,
+    pub transform: Transform,
+}
+
+impl SunrayPbrBundle {
+    /// Default material, identity transform.
+    pub fn new(mesh: MeshHandle) -> Self {
+        Self {
+            mesh: SunrayMesh(mesh),
+            material: SunrayMaterial::default(),
+            transform: Transform::default(),
+        }
+    }
+
+    pub fn with_material(mut self, material: vulkan_abstraction::Material) -> Self {
+        self.material = SunrayMaterial(material);
+        self
+    }
+
+    pub fn at(mut self, transform: Transform) -> Self {
+        self.transform = transform;
+        self
     }
 }
 
@@ -186,6 +234,11 @@ pub struct SunrayContext {
     /// users who set `auto_spawn_initial_scene = false` and want to attach
     /// `SunrayEntity` components to their own Bevy entities.
     pub initial_scene_entities: Vec<vulkan_abstraction::EntityId>,
+    /// Mirror of live Bevy→sunray entity mappings. Populated by
+    /// `spawn_pending_sunray_entities` and drained by
+    /// `handle_despawned_sunray_entities` when a `SunrayEntity` component is
+    /// removed (covering both component removal and Bevy entity despawn).
+    pub bevy_to_sunray: BTreeMap<Entity, vulkan_abstraction::EntityId>,
 }
 
 impl Drop for SunrayContext {
@@ -249,8 +302,13 @@ fn try_init_sunray(world: &mut World) {
     world.insert_non_send(ctx);
 
     if config.auto_spawn_initial_scene {
+        let mut mapping = Vec::with_capacity(scene_ids.len());
         for (id, transform) in scene_ids.into_iter().zip(initial_transforms) {
-            world.spawn((SunrayEntity(id), transform));
+            let bevy_entity = world.spawn((SunrayEntity(id), transform)).id();
+            mapping.push((bevy_entity, id));
+        }
+        if let Some(mut ctx) = world.get_non_send_mut::<SunrayContext>() {
+            ctx.bevy_to_sunray.extend(mapping);
         }
     }
 }
@@ -275,17 +333,17 @@ fn process_scene_events(
             Ok(ids) => {
                 info!("Loaded {} entities from '{}'", ids.len(), ev.path);
                 invalidate_stale_fences(&mut ctx);
-                let bevy_entities: Vec<Entity> = ids
-                    .into_iter()
-                    .map(|id| {
-                        let transform = ctx
-                            .renderer
-                            .get_entity_transform(id)
-                            .map(na_mat4_to_transform)
-                            .unwrap_or_default();
-                        commands.spawn((SunrayEntity(id), transform)).id()
-                    })
-                    .collect();
+                let mut bevy_entities = Vec::with_capacity(ids.len());
+                for id in ids {
+                    let transform = ctx
+                        .renderer
+                        .get_entity_transform(id)
+                        .map(na_mat4_to_transform)
+                        .unwrap_or_default();
+                    let bevy_entity = commands.spawn((SunrayEntity(id), transform)).id();
+                    ctx.bevy_to_sunray.insert(bevy_entity, id);
+                    bevy_entities.push(bevy_entity);
+                }
                 loaded_events.write(SunraySceneLoaded {
                     path: ev.path.clone(),
                     bevy_entities,
@@ -296,14 +354,11 @@ fn process_scene_events(
     }
 
     for ev in despawn_events.read() {
-        let Ok(&SunrayEntity(id)) = sunray_entities.get(ev.entity) else {
-            continue;
-        };
-        if let Err(e) = ctx.renderer.destroy_entity(id) {
-            error!("destroy_entity({:?}) failed: {e}", id);
+        if sunray_entities.get(ev.entity).is_err() {
             continue;
         }
-        invalidate_stale_fences(&mut ctx);
+        // Actual teardown happens in `handle_despawned_sunray_entities`
+        // once `RemovedComponents<SunrayEntity>` fires for this despawn.
         commands.entity(ev.entity).despawn();
     }
 }
@@ -337,6 +392,7 @@ fn spawn_pending_sunray_entities(
         match ctx.renderer.create_entity(mesh.0, &material.0, transform) {
             Ok(id) => {
                 commands.entity(entity).insert(SunrayEntity(id));
+                ctx.bevy_to_sunray.insert(entity, id);
                 created_any = true;
             }
             Err(e) => error!("create_entity for Bevy entity {entity:?} failed: {e}"),
@@ -344,6 +400,55 @@ fn spawn_pending_sunray_entities(
     }
     if created_any {
         invalidate_stale_fences(&mut ctx);
+    }
+}
+
+/// Destroy the sunray-side entity when its `SunrayEntity` component is
+/// removed. Covers both explicit `Commands::entity().remove::<_>()` calls
+/// and full Bevy entity despawns (both fire `RemovedComponents` for every
+/// component the entity had). Without this, despawned Bevy entities would
+/// remain in the TLAS and keep drawing.
+fn handle_despawned_sunray_entities(
+    ctx: Option<NonSendMut<SunrayContext>>,
+    mut removed: RemovedComponents<SunrayEntity>,
+) {
+    let Some(mut ctx) = ctx else {
+        removed.clear();
+        return;
+    };
+    let mut destroyed_any = false;
+    for bevy_entity in removed.read() {
+        let Some(id) = ctx.bevy_to_sunray.remove(&bevy_entity) else {
+            continue;
+        };
+        if let Err(e) = ctx.renderer.destroy_entity(id) {
+            error!("destroy_entity({id:?}) for despawned {bevy_entity:?}: {e}");
+            continue;
+        }
+        destroyed_any = true;
+    }
+    if destroyed_any {
+        invalidate_stale_fences(&mut ctx);
+    }
+}
+
+/// Push material changes to sunray. Only runs for entities that already have
+/// a live `SunrayEntity` id (i.e. have been processed by
+/// `spawn_pending_sunray_entities`). The initial `Added` frame is skipped —
+/// the material was read at spawn time and pushing it back would be a no-op
+/// upload.
+fn sync_entity_materials(
+    ctx: Option<NonSendMut<SunrayContext>>,
+    q: Query<(&SunrayEntity, Ref<SunrayMaterial>)>,
+) {
+    let Some(mut ctx) = ctx else { return; };
+    for (se, mat) in &q {
+        if !mat.is_changed() || mat.is_added() {
+            continue;
+        }
+        if let Err(e) = ctx.renderer.set_entity_material(se.0, &mat.0) {
+            error!("set_entity_material({:?}) failed: {e}", se.0);
+        }
     }
 }
 
@@ -379,11 +484,7 @@ fn build_context(
         Vec::new()
     };
 
-    let surface = surface::Surface::new(
-        renderer.core().entry(),
-        renderer.core().instance(),
-        surface_handle,
-    );
+    let surface = surface::Surface::new(Rc::clone(renderer.core()), surface_handle);
     let swapchain =
         swapchain::Swapchain::new(Rc::clone(renderer.core()), surface.handle(), size)?;
 
@@ -413,6 +514,7 @@ fn build_context(
         frame_index: 0,
         current_extent: size,
         initial_scene_entities,
+        bevy_to_sunray: BTreeMap::new(),
     })
 }
 

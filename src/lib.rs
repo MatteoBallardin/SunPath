@@ -665,13 +665,49 @@ impl Renderer {
         Ok(())
     }
 
+    /// Upload a texture and return a handle whose `.slot()` value can be
+    /// stored on a `gltf::Material` texture index. `data` must be tightly
+    /// packed in `format`, with one byte per channel per pixel for 8-bit
+    /// formats (see `vulkan_abstraction::Image::new_from_data`). Clears
+    /// image-dependent descriptor sets so the new binding is picked up next
+    /// frame.
+    pub fn create_texture(
+        &mut self,
+        data: Vec<u8>,
+        extent: (u32, u32),
+        format: vk::Format,
+    ) -> SrResult<TextureHandle> {
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+        let handle = self.resource_manager.create_texture(
+            data,
+            vk::Extent3D {
+                width: extent.0,
+                height: extent.1,
+                depth: 1,
+            },
+            format,
+        )?;
+        self.clear_image_dependent_data();
+        Ok(handle)
+    }
+
+    /// Release a texture previously returned by `create_texture`. The slot
+    /// reverts to the fallback texture; materials still referencing it will
+    /// render with the fallback.
+    pub fn destroy_texture(&mut self, handle: TextureHandle) -> SrResult<()> {
+        unsafe { self.core.device().inner().device_wait_idle() }?;
+        self.resource_manager.destroy_texture(handle);
+        self.clear_image_dependent_data();
+        Ok(())
+    }
+
     /// Spawn an entity that draws `mesh` with `material` at `transform`.
     /// Automatically rebuilds the TLAS and clears image-dependent descriptor
     /// sets (they will be rebuilt on the next frame).
     pub fn create_entity(
         &mut self,
         mesh: MeshHandle,
-        material: &vulkan_abstraction::gltf::Material,
+        material: &vulkan_abstraction::Material,
         transform: nalgebra::Matrix4<f32>,
     ) -> SrResult<vulkan_abstraction::EntityId> {
         let vk_transform = Self::na_mat4_to_vk_transform(transform);
@@ -720,6 +756,16 @@ impl Renderer {
     ) -> SrResult<()> {
         let vk_transform = Self::na_mat4_to_vk_transform(transform);
         self.resource_manager.set_entity_transform(id, vk_transform)
+    }
+
+    /// Replace an entity's PBR material. No TLAS rebuild is needed — the
+    /// shader picks up the new material on the next ray dispatch.
+    pub fn set_entity_material(
+        &mut self,
+        id: vulkan_abstraction::EntityId,
+        material: &vulkan_abstraction::Material,
+    ) -> SrResult<()> {
+        self.resource_manager.set_entity_material(id, material)
     }
 
     /// Read back an entity's current world transform as a full 4x4 matrix.

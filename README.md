@@ -326,3 +326,24 @@ Main tradeoff to flag now: this path re-implements a slice of bevy_render on top
 invest.
 
 Want me to start on Stage 1?     
+
+Stage 1.5 (emissive plumbing in create_mesh)
+- Added MeshData::emission: Option<[f32; 3]>. If set, ResourceManager::create_mesh builds an EmissiveTriangle per triangle (local-space positions + premultiplied emission), appends them to the BLAS emissive-triangles arena, and records the slot range on the
+  BLAS so NEE picks them up. add_blas_emissive_triangles now returns the allocated slot range instead of ().
+- ResourceManager::new_empty seeds rebuild_emissive_indirection() so binding 9 is never VK_NULL_HANDLE even before the first entity exists.
+- Renderer::create_entity also rebuilds the indirection after TLAS rebuild, so adding emissive meshes keeps the indirection correct.
+
+Stage 3 (public texture upload)
+- New sunray::TextureHandle(pub u32) with .slot() convenience for plugging into gltf::Material texture-index fields.
+- ResourceManager::create_texture(data, extent, format) uploads an Image + Sampler, allocates a slot from the top of the 1024-slot table downward (so scene textures and user textures don't collide), wires them into textures[slot].
+- ResourceManager::destroy_texture(handle) reverts the slot to the fallback texture. Slots are not recycled (would collide with any still-bound materials).
+- set_textures now re-applies user textures after its scene-fill, so load_scene no longer wipes them.
+- Renderer::create_texture(Vec<u8>, (w, h), vk::Format) / destroy_texture(handle) — thin wrappers that device_wait_idle, forward to ResourceManager, and clear_image_dependent_data() so the descriptor sets are rebuilt next frame.
+- bevy_extension re-exports SunrayTextureHandle.
+
+Demo updates
+- Uploads a 16×16 RGBA8 checkerboard via Renderer::create_texture, binds the returned slot to the red cube's base_color_texture_index.
+- cube_mesh now also emits per-face UVs (standard 0,0→1,0→1,1→0,1 across the four verts) so textures map correctly.
+- Red cube is non-emissive; a smaller bright white cube at y=3.5 registers MeshData.emission so its triangles act as an NEE area light. Over a second or two of accumulation the red cube should show a checker pattern lit by the white cube above.
+
+Please run it and let me know what you see. If the checker looks washed out or the cube is still too dark, we can nudge emissive_strength on the light cube or change the base_color_factor/roughness on the red one.

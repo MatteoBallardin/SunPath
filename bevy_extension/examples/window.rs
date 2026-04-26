@@ -9,9 +9,10 @@ use std::{collections::HashSet, time::Instant};
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use ash::vk;
 use bevy_extension::{
-    sunray::vulkan_abstraction, SunrayCamera, SunrayContext, SunrayMesh, SunrayMeshData,
-    SunrayMaterial, SunrayPlugin, SunrayPluginConfig,
+    sunray::vulkan_abstraction, SunrayCamera, SunrayContext, SunrayMeshData, SunrayPbrBundle,
+    SunrayPlugin, SunrayPluginConfig,
 };
 
 #[derive(Resource, Default)]
@@ -77,62 +78,96 @@ fn spawn_demo_cube(
     }
     let Some(mut ctx) = ctx else { return; };
 
-    let mesh = cube_mesh();
-    let handle = match ctx.renderer.create_mesh(&mesh) {
+    // Upload a procedural 16×16 checkerboard to exercise `create_texture`.
+    let checker_extent = (16u32, 16u32);
+    let checker_bytes = checker_texture(checker_extent.0, checker_extent.1);
+    let checker = match ctx
+        .renderer
+        .create_texture(checker_bytes, checker_extent, vk::Format::R8G8B8A8_UNORM)
+    {
         Ok(h) => h,
         Err(e) => {
-            error!("create_mesh failed: {e}");
+            error!("create_texture (checker) failed: {e}");
             return;
         }
     };
+    info!("Uploaded checker texture at slot {}", checker.slot());
 
-    // Sunray's path tracer has no default sky / ambient light — the miss
-    // shader returns zero emission. Give the cube a strong emissive factor so
-    // direct hits are visible on screen. (Proper lit rendering of
-    // non-emissive geometry additionally needs per-BLAS emissive triangle
-    // registration, which `create_mesh` doesn't wire up yet.)
-    let mut material = vulkan_abstraction::gltf::Material::default();
-    material.pbr_metallic_roughness_properties.base_color_factor = [0.85, 0.25, 0.25, 1.0];
-    material.pbr_metallic_roughness_properties.roughness_factor = 0.4;
-    material.emissive_factor = [0.85, 0.25, 0.25];
-    material.emissive_strength = 4.0;
+    // Non-emissive textured cube sitting on a matte plane, lit by a small
+    // emissive sphere overhead. All three meshes come from the sunray
+    // primitive builders.
+    let cube_handle = match ctx.renderer.create_mesh(&SunrayMeshData::cube(0.5)) {
+        Ok(h) => h,
+        Err(e) => { error!("create_mesh (cube) failed: {e}"); return; }
+    };
+    let plane_handle = match ctx.renderer.create_mesh(&SunrayMeshData::plane(10.0)) {
+        Ok(h) => h,
+        Err(e) => { error!("create_mesh (plane) failed: {e}"); return; }
+    };
 
-    commands.spawn((
-        SunrayMesh(handle),
-        SunrayMaterial(material),
-        Transform::from_xyz(0.0, 1.0, 0.0),
-    ));
+    let light_emission = [12.0, 12.0, 12.0];
+    let mut light_mesh = SunrayMeshData::sphere(0.3, 24, 16);
+    light_mesh.emission = Some(light_emission);
+    let light_handle = match ctx.renderer.create_mesh(&light_mesh) {
+        Ok(h) => h,
+        Err(e) => { error!("create_mesh (light) failed: {e}"); return; }
+    };
 
-    info!("Spawned demo cube (MeshHandle = {:?})", handle);
+    let cube_mat = vulkan_abstraction::Material {
+        base_color_value: [1.0, 1.0, 1.0, 1.0],
+        base_color_texture_index: checker.0,
+        roughness_factor: 0.6,
+        ..vulkan_abstraction::Material::default()
+    };
+    let plane_mat = vulkan_abstraction::Material {
+        base_color_value: [0.8, 0.8, 0.8, 1.0],
+        roughness_factor: 0.9,
+        ..vulkan_abstraction::Material::default()
+    };
+    let light_mat = vulkan_abstraction::Material {
+        base_color_value: [1.0, 1.0, 1.0, 1.0],
+        emissive_factor: [1.0, 1.0, 1.0, 12.0],
+        ..vulkan_abstraction::Material::default()
+    };
+
+    commands.spawn(
+        SunrayPbrBundle::new(cube_handle)
+            .with_material(cube_mat)
+            .at(Transform::from_xyz(0.0, 1.0, 0.0)),
+    );
+    commands.spawn(
+        SunrayPbrBundle::new(plane_handle)
+            .with_material(plane_mat)
+            .at(Transform::from_xyz(0.0, 0.5, 0.0)),
+    );
+    commands.spawn(
+        SunrayPbrBundle::new(light_handle)
+            .with_material(light_mat)
+            .at(Transform::from_xyz(0.0, 3.5, 0.0)),
+    );
+
+    info!(
+        "Spawned demo: cube={:?}, plane={:?}, light={:?}",
+        cube_handle, plane_handle, light_handle
+    );
     state.spawned = true;
 }
 
-/// Flat-shaded unit cube centered at the origin. Each face gets its own four
-/// vertices so normals are constant per face.
-fn cube_mesh() -> SunrayMeshData {
-    const H: f32 = 0.5;
-    let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-        ([-1.0, 0.0, 0.0], [[-H, -H, -H], [-H, -H,  H], [-H,  H,  H], [-H,  H, -H]]),
-        ([ 1.0, 0.0, 0.0], [[ H, -H,  H], [ H, -H, -H], [ H,  H, -H], [ H,  H,  H]]),
-        ([0.0, -1.0, 0.0], [[-H, -H, -H], [ H, -H, -H], [ H, -H,  H], [-H, -H,  H]]),
-        ([0.0,  1.0, 0.0], [[-H,  H,  H], [ H,  H,  H], [ H,  H, -H], [-H,  H, -H]]),
-        ([0.0, 0.0, -1.0], [[ H, -H, -H], [-H, -H, -H], [-H,  H, -H], [ H,  H, -H]]),
-        ([0.0, 0.0,  1.0], [[-H, -H,  H], [ H, -H,  H], [ H,  H,  H], [-H,  H,  H]]),
-    ];
-
-    let mut positions = Vec::with_capacity(24);
-    let mut normals = Vec::with_capacity(24);
-    let mut indices = Vec::with_capacity(36);
-    for (face_idx, (normal, verts)) in faces.iter().enumerate() {
-        let base = (face_idx * 4) as u32;
-        for v in verts {
-            positions.push(*v);
-            normals.push(*normal);
+/// Procedural 8×8-cell black/white checkerboard at the given resolution,
+/// packed as RGBA8. Used by the demo as a `create_texture` input.
+fn checker_texture(width: u32, height: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((width * height * 4) as usize);
+    let cells = 4u32;
+    for y in 0..height {
+        for x in 0..width {
+            let cx = (x * cells) / width;
+            let cy = (y * cells) / height;
+            let on = (cx + cy) % 2 == 0;
+            let c = if on { 230 } else { 40 };
+            out.extend_from_slice(&[c, c, c, 255]);
         }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
-
-    SunrayMeshData { positions, normals, indices, ..Default::default() }
+    out
 }
 
 fn spawn_camera(mut commands: Commands) {
@@ -148,6 +183,8 @@ fn track_keys(
     mut windows: Query<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     use bevy::input::ButtonState;
+
+
     for ev in keys.read() {
         match ev.state {
             ButtonState::Pressed => {
@@ -244,6 +281,7 @@ fn fly_camera(
     if state.keys_down.contains(&KeyCode::ControlLeft) {
         transform.translation -= Vec3::Y * speed;
     }
+
 
     // Orient the transform so its -Z axis points along `forward`.
     let target = transform.translation + forward;
